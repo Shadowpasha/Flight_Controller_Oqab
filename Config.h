@@ -42,7 +42,8 @@ enum FlightStage {
 
 // --- Active Altitude Sensor Source ---
 enum AltSource {
-  ALT_SOURCE_SHARP = 0,
+  ALT_SOURCE_LIDAR = 0,
+  ALT_SOURCE_SHARP,
   ALT_SOURCE_BARO_ACC
 };
 
@@ -57,10 +58,25 @@ enum AltSource {
 // Distance & Compass / Baro Pins
 #define SHARP_IR_PIN 34 // ADC1_CH6 analog input
 
-// GPS Serial2 Pins
-#define GPS_RX_PIN 16
-#define GPS_TX_PIN 17
-#define GPS_BAUD   9600 // Standard 9600 baud for NEO-6M / NEO-7M / NEO-M8N NMEA
+// Sensor Serial2 Pins (Shared UART port for GPS or Matek Optical Flow)
+#define SENSOR_UART_RX_PIN  16
+#define SENSOR_UART_TX_PIN  17
+
+// GPS Subsystem Toggle (Legacy)
+#define USE_GPS             false // Set false to disable GPS entirely
+#define GPS_RX_PIN          SENSOR_UART_RX_PIN
+#define GPS_TX_PIN          SENSOR_UART_TX_PIN
+#define GPS_BAUD            9600  // 9600 baud for NMEA
+
+// Optical Flow Subsystem (Mateksys 3901-L0X / 3901-L1X via MSPv2)
+#define USE_OPTICAL_FLOW    true   // Master toggle: Mateksys Optical Flow as primary horizontal estimator
+#define FLOW_RX_PIN         SENSOR_UART_RX_PIN
+#define FLOW_TX_PIN         SENSOR_UART_TX_PIN
+#define FLOW_BAUD           115200 // Matek 3901 MSPv2 default baud rate
+#define FLOW_RAD_PER_COUNT  0.0038f // PMW3901 42 deg FOV angular scale (rad/count)
+#define FLOW_QUALITY_THRESH 35     // Minimum tracking quality threshold (0-255)
+#define FLOW_MIN_HEIGHT_M   0.05f  // Minimum ground distance (5cm) for flow calculation
+#define FLOW_MAX_HEIGHT_M   3.00f  // Maximum reliable range (3.0m)
 
 // Bluetooth Device Name
 #define BT_DEVICE_NAME "F330_Flight_Controller"
@@ -82,10 +98,11 @@ enum AltSource {
 #define MAX_TILT_ANGLE_DEG   40.0f    // Instant crash disarm threshold
 #define TIMEOUT_SAFETY_MS    30000    // 30s safety watchdog without serial command
 
-// --- Pure Sharp IR Altitude Control Config ---
-#define USE_SHARP_ONLY_ALTITUDE   true   // Lock altitude estimation to high-speed Sharp IR (avoids baro downwash noise)
-#define DEFAULT_TARGET_HEIGHT_CM  45.0f  // 45 cm hover height (centered cleanly in Sharp 10-60cm linear zone)
-#define MAX_SAFE_CEILING_CM       72.0f  // Ceil threshold before Sharp saturation (80cm) triggering emergency descent
+// --- Pure ToF LiDAR Altitude Control Config ---
+#define USE_LIDAR_ONLY_ALTITUDE   true   // Lock vertical state estimation exclusively to Mateksys ToF LiDAR (0-200cm, immune to downwash/baro drift)
+#define USE_SHARP_ONLY_ALTITUDE   false  // Legacy Sharp GP2Y0A analog IR rangefinder (dewired)
+#define DEFAULT_TARGET_HEIGHT_CM  45.0f  // 45 cm hover height
+#define MAX_SAFE_CEILING_CM       185.0f // Safety ceiling before Matek 3901-L0X VL53 ToF saturation (200cm) triggering emergency descent
 
 // Output Saturation Caps
 #define MAX_PID_OUT          350.0f   // Max differential PWM for roll/pitch

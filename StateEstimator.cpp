@@ -1,4 +1,5 @@
 #include "StateEstimator.h"
+#include "Controllers.h"
 #include <math.h>
 
 void dualPrintln(const String& msg);
@@ -163,12 +164,14 @@ static KalmanFilter1D kfEast;
 // =============================================================================
 void initStateEstimator() {
   memset(&droneState, 0, sizeof(DroneState));
+  droneState.gps_enabled         = USE_GPS;
+  droneState.flow_enabled        = USE_OPTICAL_FLOW;
 
   droneState.ground_height_cm    = 10.0f;
   droneState.current_height_cm   = 10.0f;
   droneState.kf_z                = 0.10f;
   droneState.az_filt             = 9.81f;
-  droneState.active_alt_source   = ALT_SOURCE_SHARP;
+  droneState.active_alt_source   = ALT_SOURCE_LIDAR;
 
   // Horizontal Kalman filter tuning: balanced for MPU6050 and NEO-M8N GPS
   kfNorth.init(0.005f, 0.035f, 0.0005f);
@@ -220,11 +223,59 @@ void resetEstimatorStates() {
   droneState.dist_3d_m            = 0.0f;
   droneState.speed_3d_mps         = 0.0f;
   droneState.gps_accuracy_est_m   = 99.9f;
+  droneState.flow_valid           = false;
+  droneState.flow_vel_body_x      = 0.0f;
+  droneState.flow_vel_body_y      = 0.0f;
+  droneState.flow_vel_north_mps   = 0.0f;
+  droneState.flow_vel_east_mps    = 0.0f;
   droneState.vel_north_filt       = 0.0f;
   droneState.vel_east_filt        = 0.0f;
   droneState.is_airborne          = false;
   droneState.above_thresh_since_ms = 0;
   droneState.az_filt              = 9.81f;
+}
+
+void setFlowEnabled(bool enable) {
+  droneState.flow_enabled = enable;
+  if (!enable) {
+    droneState.flow_valid         = false;
+    droneState.flow_vel_body_x    = 0.0f;
+    droneState.flow_vel_body_y    = 0.0f;
+    droneState.flow_vel_north_mps = 0.0f;
+    droneState.flow_vel_east_mps  = 0.0f;
+    if (flowSensor) {
+      flowSensor->end();
+    }
+    resetPositionControl();
+    dualPrintln("---> Mateksys Optical Flow DISABLED");
+  } else {
+    if (flowSensor) {
+      flowSensor->begin();
+    }
+    dualPrintln("---> Mateksys Optical Flow ENABLED on Serial2 (RX:16, TX:17) @ 115200 baud");
+  }
+}
+
+void setGPSEnabled(bool enable) {
+  droneState.gps_enabled = enable;
+  if (!enable) {
+    droneState.has_gps_home       = false;
+    droneState.gps_home_lat       = 0.0;
+    droneState.gps_home_lon       = 0.0;
+    droneState.raw_pos_north_m    = 0.0f;
+    droneState.raw_pos_east_m     = 0.0f;
+    droneState.gps_accuracy_est_m = 99.9f;
+    if (gpsSensor) {
+      gpsSensor->end();
+    }
+    resetPositionControl();
+    dualPrintln("---> GPS Subsystem DISABLED: All GPS navigation and fusion stopped");
+  } else {
+    if (gpsSensor) {
+      gpsSensor->begin();
+    }
+    dualPrintln("---> GPS Subsystem ENABLED: Listening on Serial2 (RX:16, TX:17)");
+  }
 }
 
 // =============================================================================
@@ -233,7 +284,7 @@ void resetEstimatorStates() {
 void setHomeToBootPoint() {
   droneState.home_type           = DroneState::HOME_BOOT;
   droneState.home_is_set         = true;
-  bool good_fix                  = (gpsSensor && gpsSensor->hasFix() && 
+  bool good_fix                  = (droneState.gps_enabled && gpsSensor && gpsSensor->hasFix() && 
                                    ((gpsSensor->getSatellites() >= 4 && gpsSensor->getHDOP() <= 4.5f) || 
                                     (gpsSensor->getSatellites() == 0 && gpsSensor->hasFix())));
   droneState.has_gps_home        = good_fix;
@@ -271,10 +322,14 @@ void setHomeToBootPoint() {
 void setHomeToArmPoint() {
   droneState.home_type           = DroneState::HOME_ARM;
   droneState.home_is_set         = true;
-  if (gpsSensor && gpsSensor->hasFix()) {
+  if (droneState.gps_enabled && gpsSensor && gpsSensor->hasFix()) {
     droneState.gps_home_lat      = gpsSensor->getLatitude();
     droneState.gps_home_lon      = gpsSensor->getLongitude();
     droneState.has_gps_home      = true;
+  } else {
+    droneState.gps_home_lat      = 0.0;
+    droneState.gps_home_lon      = 0.0;
+    droneState.has_gps_home      = false;
   }
   droneState.home_alt_baseline_m = droneState.kf_z;
 
@@ -309,7 +364,7 @@ const char* getHomeOriginTypeName() {
 //  SENSOR CALIBRATION (IMU, Ground Clearance, Compass, Barometer P0)
 // =============================================================================
 void calibrateAllSensors() {
-  dualPrintln(">>> Calibrating IMU, Ground Clearance & Barometer Baseline...");
+  dualPrintln(">>> Calibrating IMU, Mateksys ToF LiDAR Ground Clearance & Gyro Bias...");
   delay(400);
 
   float sum_gx = 0.0f, sum_gy = 0.0f, sum_gz = 0.0f;
@@ -331,11 +386,15 @@ void calibrateAllSensors() {
       sum_p += p;
     }
 
-    if (rangeSensor && (i % 4 == 0)) {
-      float d = rangeSensor->readDistanceCM();
-      if (d >= 5.0f && d <= 80.0f) {
-        sum_dist += d;
-        valid_dist_count++;
+    // Feed and sample Mateksys ToF LiDAR distance
+    if (droneState.flow_enabled && flowSensor) {
+      flowSensor->update();
+      if (flowSensor->hasLidar()) {
+        float d_cm = flowSensor->getLidarDistanceM() * 100.0f;
+        if (d_cm >= 3.0f && d_cm <= 40.0f) {
+          sum_dist += d_cm;
+          valid_dist_count++;
+        }
       }
     }
     delay(4);
@@ -350,13 +409,13 @@ void calibrateAllSensors() {
   droneState.pitch_deg        = 0.0f;
 
   if (valid_dist_count > 0) {
-    droneState.ground_height_cm  = sum_dist / (float)valid_dist_count;
+    droneState.ground_height_cm = sum_dist / (float)valid_dist_count;
   } else {
-    droneState.ground_height_cm  = 10.0f;
+    droneState.ground_height_cm = 8.0f; // Default landing gear height baseline
   }
-  // Sanity clamp ground clearance baseline to avoid the <8cm non-linear ambiguity zone
-  droneState.ground_height_cm    = constrain(droneState.ground_height_cm, 8.0f, 16.0f);
+  droneState.ground_height_cm    = constrain(droneState.ground_height_cm, 3.0f, 25.0f);
   droneState.current_height_cm   = droneState.ground_height_cm;
+  droneState.raw_height_cm       = droneState.ground_height_cm;
   droneState.kf_z                = droneState.ground_height_cm * 0.01f;
 
   // Lock True North heading with compass
@@ -374,14 +433,10 @@ void calibrateAllSensors() {
     droneState.yaw_deg = 0.0f;
   }
 
-  // Calibrate Barometer P0
-  if (baroSensor && baroSensor->isAvailable()) {
-    if (baroSensor->calibrateBaseline(15)) {
-      droneState.baro_pressure_pa     = baroSensor->getBaselinePressurePa();
-      droneState.baro_raw_alt_cm      = 0.0f;
-      droneState.baro_ground_offset_m = 0.0f;
-    }
-  }
+  // Barometer completely disabled - set ground datum to zero
+  droneState.baro_pressure_pa     = 101325.0f;
+  droneState.baro_raw_alt_cm      = 0.0f;
+  droneState.baro_ground_offset_m = 0.0f;
 
   // Calibrate residual stationary horizontal acceleration offsets (ZUPT baseline)
   float sum_afwd = 0.0f, sum_aright = 0.0f;
@@ -528,14 +583,7 @@ static void kfUpdate(float z_meas, float R) {
 }
 
 void updateAltitudeEstimator(float dt, bool is_airborne, bool sim_mode) {
-  // 1. Advance Barometer non-blocking state machine
-  if (baroSensor) {
-    baroSensor->update();
-    droneState.baro_pressure_pa = baroSensor->getPressurePa();
-    droneState.baro_raw_alt_cm  = baroSensor->getRawAltitudeCm();
-  }
-
-  // 2. Kinematic Prediction (World vertical acceleration)
+  // 1. Kinematic Prediction (World vertical acceleration)
   float phi_r   = droneState.roll_deg  * DEG_TO_RAD;
   float theta_r = droneState.pitch_deg * DEG_TO_RAD;
   float a_z_world = (droneState.ax_body * sin(theta_r)) -
@@ -546,9 +594,9 @@ void updateAltitudeEstimator(float dt, bool is_airborne, bool sim_mode) {
     kfPredict(a_z_world, dt);
   } else {
     // When on ground before airborne confirmation:
-    // Allow kf_z to track the tilt-corrected IR rangefinder if valid,
-    // otherwise fallback to ground baseline (~10cm).
-    float ground_z = (droneState.rf_valid && droneState.z_rf_corrected_m >= 0.05f) ?
+    // Allow kf_z to track the tilt-corrected LiDAR if valid,
+    // otherwise fallback to ground baseline (~8cm).
+    float ground_z = (droneState.rf_valid && droneState.z_rf_corrected_m >= 0.03f) ?
                      droneState.z_rf_corrected_m : (droneState.ground_height_cm * 0.01f);
     droneState.kf_z  = ground_z;
     droneState.kf_vz = 0.0f;
@@ -559,75 +607,30 @@ void updateAltitudeEstimator(float dt, bool is_airborne, bool sim_mode) {
     P_22 = 0.01f;
   }
 
-  // 3. Rangefinder reading & tilt compensation
-  if (rangeSensor) {
-    float raw_cm = rangeSensor->readDistanceCM();
-    if (!isnan(raw_cm) && raw_cm > 0.0f) {
-      droneState.raw_height_cm = raw_cm;
-    }
+  // 2. Mateksys ToF LiDAR Reading & Tilt Compensation
+  // Barometer and Sharp IR are completely removed.
+  bool lidar_active = droneState.flow_enabled && flowSensor && flowSensor->hasLidar() &&
+                      (flowSensor->getLidarQuality() > 30) && (flowSensor->getLidarDistanceM() >= 0.03f);
+
+  if (lidar_active) {
+    droneState.raw_height_cm = flowSensor->getLidarDistanceM() * 100.0f;
   }
 
   float z_raw_m = droneState.raw_height_cm * 0.01f;
   droneState.z_rf_corrected_m = z_raw_m * cos(phi_r) * cos(theta_r);
 
-  // Rangefinder is physically valid whenever it is within its 0.8m sensing envelope
-  // and tilt angle is within normal flying limits (beam pointing toward the ground)
-  bool tilt_ok = (fabs(droneState.roll_deg) <= 30.0f) && (fabs(droneState.pitch_deg) <= 30.0f);
-  droneState.rf_valid = tilt_ok && !isnan(droneState.raw_height_cm) &&
-                        (droneState.z_rf_corrected_m >= 0.05f) &&
-                        (droneState.z_rf_corrected_m <= 0.80f);
+  // Rangefinder is valid up to 2.00m within +/-35 deg tilt
+  bool tilt_ok = (fabs(droneState.roll_deg) <= 35.0f) && (fabs(droneState.pitch_deg) <= 35.0f);
+  droneState.rf_valid = lidar_active && tilt_ok && !isnan(droneState.raw_height_cm) &&
+                        (droneState.z_rf_corrected_m >= 0.03f) &&
+                        (droneState.z_rf_corrected_m <= 2.00f);
 
-  float z_baro = droneState.baro_raw_alt_cm * 0.01f;
-  bool has_baro = baroSensor && baroSensor->isAvailable();
-
-  // Rangefinder Handoff & Continuous Datum Tracking (kept updated in background)
-  if (has_baro && droneState.rf_valid && droneState.kf_z < 0.65f) {
-    droneState.baro_ground_offset_m = (1.0f - BARO_OFFSET_ALPHA) * droneState.baro_ground_offset_m +
-                                      BARO_OFFSET_ALPHA * (z_baro - droneState.z_rf_corrected_m);
-  }
-
-  // 4. Measurement update
-#if USE_SHARP_ONLY_ALTITUDE
-  // PURE SHARP IR RANGEFINDER MODE:
-  // Completely immune to propeller downwash, air buffeting, and baro drift.
-  // Directly updates the vertical Kalman filter using tilt-compensated distance.
+  // 3. Vertical Kalman Filter Measurement Update
+  // Pure ToF LiDAR altitude mode: high precision (R=0.0025 m^2), 0-200 cm, immune to prop wash.
   if (droneState.rf_valid) {
-    float R_meas = (droneState.raw_height_cm >= 70.0f) ? 0.03f : 0.005f;
-    kfUpdate(droneState.z_rf_corrected_m, R_meas);
-    droneState.active_alt_source = ALT_SOURCE_SHARP;
+    kfUpdate(droneState.z_rf_corrected_m, 0.0025f);
+    droneState.active_alt_source = ALT_SOURCE_LIDAR;
   }
-#else
-  // Measurement update based on altitude zone
-  if (droneState.kf_z < 0.50f) {
-    if (droneState.rf_valid) {
-      kfUpdate(droneState.z_rf_corrected_m, 0.005f);
-      droneState.active_alt_source = ALT_SOURCE_SHARP;
-    } else if (has_baro) {
-      kfUpdate(z_baro - droneState.baro_ground_offset_m, 0.60f);
-      droneState.active_alt_source = ALT_SOURCE_BARO_ACC;
-    }
-  } else if (droneState.kf_z <= 0.80f) {
-    float t = constrain((droneState.kf_z - 0.50f) / 0.30f, 0.0f, 1.0f);
-    float R_rf   = 0.005f + 0.12f * (t * t);
-    float R_baro = 0.15f  + 0.45f * (1.0f - t);
-
-    if (droneState.rf_valid) {
-      kfUpdate(droneState.z_rf_corrected_m, R_rf);
-    }
-    if (has_baro) {
-      kfUpdate(z_baro - droneState.baro_ground_offset_m, R_baro);
-    }
-    droneState.active_alt_source = (t < 0.5f && droneState.rf_valid) ? ALT_SOURCE_SHARP : ALT_SOURCE_BARO_ACC;
-  } else {
-    if (has_baro) {
-      kfUpdate(z_baro - droneState.baro_ground_offset_m, 0.15f);
-      droneState.active_alt_source = ALT_SOURCE_BARO_ACC;
-    } else if (droneState.rf_valid) {
-      kfUpdate(droneState.z_rf_corrected_m, 0.05f);
-      droneState.active_alt_source = ALT_SOURCE_SHARP;
-    }
-  }
-#endif
 
   droneState.current_height_cm   = droneState.kf_z * 100.0f;
   droneState.climb_rate_cms      = droneState.kf_vz * 100.0f;
@@ -764,6 +767,11 @@ void updateHorizontalEstimator(float dt, bool is_airborne, bool sim_mode) {
     }
   }
 
+  // Optical Flow Measurement Update (High-rate 30-50 Hz velocity fusion)
+  if (droneState.flow_enabled && flowSensor && flowSensor->isUpdated()) {
+    updateOpticalFlowEstimator(flowSensor->getDeltaTimeSec(), is_airborne);
+  }
+
   // Sync fused estimates into public state
   droneState.kf_pos_n       = kfNorth.pos;
   droneState.kf_vel_n       = kfNorth.vel;
@@ -798,10 +806,106 @@ void updateHorizontalEstimator(float dt, bool is_airborne, bool sim_mode) {
 }
 
 // =============================================================================
+//  OPTICAL FLOW HORIZONTAL VELOCITY & POSITION ESTIMATOR
+// =============================================================================
+void updateOpticalFlowEstimator(float dt, bool is_airborne) {
+  if (!flowSensor) return;
+
+  uint8_t q     = flowSensor->getQuality();
+  int32_t raw_x = flowSensor->getMotionX();
+  int32_t raw_y = flowSensor->getMotionY();
+
+  droneState.flow_quality      = q;
+  droneState.flow_raw_x        = raw_x;
+  droneState.flow_raw_y        = raw_y;
+  droneState.flow_packets_seen = flowSensor->getPacketCount();
+
+  if (flowSensor->hasLidar()) {
+    droneState.flow_lidar_dist_m  = flowSensor->getLidarDistanceM();
+    droneState.flow_lidar_quality = flowSensor->getLidarQuality();
+  }
+
+  // Discard measurements with poor tracking confidence
+  if (q < FLOW_QUALITY_THRESH) {
+    droneState.flow_valid = false;
+    return;
+  }
+
+  if (dt <= 0.001f || dt > 0.15f) dt = 0.02f;
+
+  // 1. Determine current height above ground Z (m)
+  // Prefer Sharp IR / fused altitude (or onboard Matek LiDAR if valid)
+  float z_m = droneState.kf_z;
+  if (flowSensor->hasLidar() && flowSensor->getLidarQuality() > 50 && flowSensor->getLidarDistanceM() >= 0.06f) {
+    z_m = flowSensor->getLidarDistanceM();
+  } else if (droneState.rf_valid && droneState.z_rf_corrected_m >= 0.06f) {
+    z_m = droneState.z_rf_corrected_m;
+  }
+  z_m = constrain(z_m, FLOW_MIN_HEIGHT_M, FLOW_MAX_HEIGHT_M);
+
+  // If drone is resting on ground, ground velocity is zero
+  if (!is_airborne && z_m <= 0.08f) {
+    droneState.flow_valid = true;
+    droneState.flow_vel_body_x = 0.0f;
+    droneState.flow_vel_body_y = 0.0f;
+    droneState.flow_vel_north_mps = 0.0f;
+    droneState.flow_vel_east_mps  = 0.0f;
+    kfNorth.vel = 0.0f;
+    kfEast.vel  = 0.0f;
+    return;
+  }
+
+  // 2. Optical flow angular rates (rad/s)
+  float omega_flow_x = ((float)raw_x / dt) * FLOW_RAD_PER_COUNT;
+  float omega_flow_y = ((float)raw_y / dt) * FLOW_RAD_PER_COUNT;
+
+  // 3. Gyro derotation: subtract body angular rates (rad/s)
+  // Pitch down (gy > 0) creates apparent backward motion along X
+  // Roll right (gx > 0) creates apparent leftward motion along Y
+  float gyro_pitch = droneState.gy_dps * DEG_TO_RAD;
+  float gyro_roll  = droneState.gx_dps * DEG_TO_RAD;
+
+  // Linear ground velocity in Body Frame (m/s)
+  // Body X = Forward, Body Y = Right
+  float v_body_fwd   = (omega_flow_x - gyro_pitch) * z_m;
+  float v_body_right = (omega_flow_y - gyro_roll)  * z_m;
+
+  v_body_fwd   = constrain(v_body_fwd,   -3.5f, 3.5f);
+  v_body_right = constrain(v_body_right, -3.5f, 3.5f);
+
+  droneState.flow_vel_body_x = v_body_fwd;
+  droneState.flow_vel_body_y = v_body_right;
+
+  // 4. Rotate Body Velocity into World NED Frame (North, East)
+  float psi = droneState.yaw_deg * DEG_TO_RAD;
+  float cos_p = cos(psi);
+  float sin_p = sin(psi);
+
+  float v_north =  v_body_fwd * cos_p - v_body_right * sin_p;
+  float v_east  =  v_body_fwd * sin_p + v_body_right * cos_p;
+
+  droneState.flow_vel_north_mps = v_north;
+  droneState.flow_vel_east_mps  = v_east;
+  droneState.flow_valid         = true;
+
+  // 5. Measurement update on Horizontal 3-State Kalman Filter
+  // Variance scales inversely with surface tracking quality
+  float r_flow = constrain(0.04f / ((float)q / 255.0f), 0.015f, 0.40f);
+
+  if (is_airborne) {
+    kfNorth.updateVel(v_north, r_flow);
+    kfEast.updateVel(v_east, r_flow);
+  }
+}
+
+// =============================================================================
 //  GPS POSITION & VELOCITY ESTIMATOR (Measurement Updates)
 // =============================================================================
 void updatePositionEstimator(float dt, bool is_armed) {
-  if (!gpsSensor) return;
+  if (!droneState.gps_enabled || !gpsSensor) {
+    droneState.gps_accuracy_est_m = 99.9f;
+    return;
+  }
 
   if (gpsSensor->hasFix()) {
     droneState.last_gps_fix_millis = millis();

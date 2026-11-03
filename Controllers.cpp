@@ -968,9 +968,9 @@ void computeAltitudeControl(float dt, int base_throttle_us, FlightStage stage, b
     // Downward authority has full -260us -> ample braking power to hold height and descend!
     raw_adj = constrain(raw_adj, -260.0f, 80.0f);
 
-    // Safety Ceiling Guard: If drone overshoots target or gets close to Sharp saturation ceiling (>65cm)
-    ceiling_emergency = (droneState.current_height_cm > (altControl.target_height_cm + 15.0f) ||
-                         droneState.raw_height_cm >= 68.0f);
+    // Safety Ceiling Guard: If drone overshoots target or gets close to ToF LiDAR saturation ceiling (>180cm)
+    ceiling_emergency = (droneState.current_height_cm > (altControl.target_height_cm + 25.0f) ||
+                         droneState.raw_height_cm >= (MAX_SAFE_CEILING_CM - 5.0f));
     if (ceiling_emergency) {
       float ceiling_overshoot_cm = droneState.current_height_cm - altControl.target_height_cm;
       float emergency_cut = constrain(ceiling_overshoot_cm * 5.0f, 70.0f, 220.0f);
@@ -1005,14 +1005,15 @@ void resetPositionControl() {
 }
 
 void computePositionControl(float dt, bool is_airborne, bool sim_mode) {
-  bool active = posControl.pos_hold_enabled && (sim_mode || (is_airborne && droneState.has_gps_home));
+  bool has_pos_ref = droneState.flow_enabled || (droneState.gps_enabled && droneState.has_gps_home);
+  bool active = posControl.pos_hold_enabled && has_pos_ref && (sim_mode || is_airborne);
   if (!active) {
     resetPositionControl();
     return;
   }
 
-  // Safety: if GPS fix is stale (>2.0s without update), hold level to avoid runaway
-  if (!sim_mode && (millis() - droneState.last_gps_fix_millis > 2000)) {
+  // Safety: if GPS is active and fix is stale (>2.0s without update), hold level to avoid runaway
+  if (droneState.gps_enabled && !droneState.flow_enabled && !sim_mode && (millis() - droneState.last_gps_fix_millis > 2000)) {
     posControl.target_roll_deg  = 0.0f;
     posControl.target_pitch_deg = 0.0f;
     posControl.vel_i_fwd        = 0.0f;

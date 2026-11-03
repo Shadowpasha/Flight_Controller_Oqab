@@ -102,15 +102,30 @@ void setup() {
   flightMgr.hover_duration_ms       = 6000; // 6s auto-hover
   flightMgr.last_command_millis     = millis();
 
+  // Initialize State Estimator & Controllers
+  initStateEstimator();
+  initControllers(1.0f / LOOP_RATE_HZ);
+
+  // Initialize Persistent Parameter System (Loads tuned values from Flash NVS)
+  initParameters();
+
   // Initialize Swappable Sensor Subsystem
   initSensors();
 
-  if (gpsSensor) {
+  if (droneState.flow_enabled && flowSensor) {
+    if (flowSensor->begin()) {
+      dualPrintln(">>> Mateksys Optical Flow (3901-L0X) started (RX:16, TX:17) @ " + String(FLOW_BAUD) + " baud (MSPv2) [ONLINE]");
+    } else {
+      dualPrintln(">>> WARNING: Mateksys Optical Flow not responding on RX:16, TX:17! [OFFLINE]");
+    }
+  } else if (droneState.gps_enabled && gpsSensor) {
     if (gpsSensor->begin()) {
       dualPrintln(">>> GPS Serial started (RX:16, TX:17) @ " + String(GPS_BAUD) + " baud (NMEA) [ONLINE]");
     } else {
       dualPrintln(">>> WARNING: GPS not responding on RX:16, TX:17! [OFFLINE - Check wiring/power]");
     }
+  } else {
+    dualPrintln(">>> Navigation Sensors (GPS / Optical Flow) DISABLED [Pure Inertial Mode active]");
   }
 
   dualPrintln(">>> ESCs initialized with 1000us idle pulse.");
@@ -122,38 +137,17 @@ void setup() {
   }
 
   // Initialize Auxiliary Sensors
-  if (rangeSensor) {
-    rangeSensor->begin();
-    dualPrintln(">>> Sharp GP2Y0A IR Rangefinder (Pin 34) [ONLINE - Primary Altitude Sensor (6-80cm)]");
-  }
   if (compassSensor) compassSensor->begin();
-  if (baroSensor) {
-    if (baroSensor->begin()) {
-#if USE_SHARP_ONLY_ALTITUDE
-      dualPrintln(">>> BMP180 Barometer [ONLINE - Telemetry only; Pure Sharp IR Mode active]");
-#else
-      dualPrintln(">>> BMP180 Barometer [ONLINE - Hybrid Altitude Mode]");
-#endif
-    } else {
-      dualPrintln(">>> BMP180 Barometer [OFFLINE - Pure Sharp IR Mode active]");
-    }
-  }
+  dualPrintln(">>> Barometer & Sharp IR: DEWIRED / REMOVED (Mateksys 3901-L0X ToF LiDAR active)");
 
-  // Initialize State Estimator & Run Calibration
-  initStateEstimator();
+  // Run Sensor Calibration & Set Boot Home
   calibrateAllSensors();
-
-  // Initialize Controllers (PID, SMC, ADRC, MDBCI, MDBCIS, CDI, CVI, NOI, VIABC)
-  initControllers(1.0f / LOOP_RATE_HZ);
-
-  // Initialize Persistent Parameter System (Loads tuned values from Flash NVS)
-  initParameters();
 
   dualPrintln("\nActive Controller : " + String(getActiveControllerName()));
   dualPrintln("Active Mode       : " + String(getFlightModeName()));
   dualPrintln("Flight Mission    : Climb to " + String(altControl.target_height_cm, 0) +
               "cm -> Hold " + String(flightMgr.hover_duration_ms / 1000) + "s -> Smooth Land");
-  dualPrintln("Altitude Control  : PURE SHARP IR MODE (Target: " + String(altControl.target_height_cm, 1) + "cm, Safe Ceil: " + String(MAX_SAFE_CEILING_CM, 1) + "cm)");
+  dualPrintln("Altitude Control  : PURE MATEKSYS ToF LIDAR MODE (Target: " + String(altControl.target_height_cm, 1) + "cm, Safe Ceil: " + String(MAX_SAFE_CEILING_CM, 1) + "cm)");
   dualPrintln("Key Commands      : 'arm', 'disarm', 'land', 'param show', 'param set <NAME> <VAL>', 'status'");
   dualPrintln("-------------------------------------------------------------------\n");
 
@@ -166,8 +160,9 @@ void setup() {
 //  MAIN DETERMINISTIC LOOP (250 Hz IMU, 50 Hz Altitude, 10 Hz GPS)
 // =============================================================================
 void loop() {
-  // Feed GPS stream non-blockingly
-  if (gpsSensor) gpsSensor->update();
+  // Feed Flow & GPS streams non-blockingly
+  if (droneState.flow_enabled && flowSensor) flowSensor->update();
+  if (droneState.gps_enabled && gpsSensor) gpsSensor->update();
 
   // Process incoming commands from Serial and Bluetooth
   handleInputCommands();
@@ -207,7 +202,9 @@ void loop() {
     float dt_gps = (current_millis - last_gps_loop_millis) / 1000.0f;
     last_gps_loop_millis = current_millis;
 
-    updatePositionEstimator(dt_gps, flightMgr.is_armed);
+    if (droneState.gps_enabled) {
+      updatePositionEstimator(dt_gps, flightMgr.is_armed);
+    }
   }
 
   // --- 4. Airborne Detection & Anti-Windup Trigger ---
@@ -222,17 +219,17 @@ void loop() {
     // Height-based detection: fused altitude is > 5cm above calibrated ground
     bool height_airborne = (droneState.current_height_cm > (droneState.ground_height_cm + 5.0f));
 
-    // IR rangefinder detection (primary liftoff detector):
-    // Ground reading is ~10cm (calibrated in ground_height_cm); starts increasing as drone lifts off.
-    bool ir_valid = (!isnan(droneState.raw_height_cm) &&
-                     droneState.raw_height_cm >= 6.0f && droneState.raw_height_cm <= 80.0f);
-    float ir_dist = (droneState.rf_valid && droneState.z_rf_corrected_m > 0.05f) ?
-                    (droneState.z_rf_corrected_m * 100.0f) : droneState.raw_height_cm;
-    bool ir_airborne = ir_valid && (ir_dist > (droneState.ground_height_cm + 4.5f));
+    // ToF LiDAR detection (primary liftoff detector):
+    // Ground reading is ~8cm (calibrated in ground_height_cm); increases smoothly as drone lifts off.
+    bool lidar_valid = droneState.rf_valid && (!isnan(droneState.raw_height_cm)) &&
+                       (droneState.raw_height_cm >= 4.0f && droneState.raw_height_cm <= 200.0f);
+    float lidar_dist = (droneState.rf_valid && droneState.z_rf_corrected_m > 0.03f) ?
+                       (droneState.z_rf_corrected_m * 100.0f) : droneState.raw_height_cm;
+    bool lidar_airborne = lidar_valid && (lidar_dist > (droneState.ground_height_cm + 4.0f));
 
     // Liftoff requires motors actively commanding genuine takeoff throttle (>= 1260us)
     bool throttle_lift_ready = (flightMgr.base_throttle_us >= 1260);
-    bool physical_lift       = (height_airborne || ir_airborne);
+    bool physical_lift       = (height_airborne || lidar_airborne);
 
     // Debounce physical liftoff to eliminate transient vibration spikes & prop wash flutter:
     // Requires physical height increase sustained for >= 150 ms before declaring airborne
@@ -255,24 +252,24 @@ void loop() {
     if (throttle_lift_ready && (confirmed_liftoff || fallback_liftoff)) {
       if (!droneState.is_airborne) {
         droneState.is_airborne = true;
-        const char* trigger_src = confirmed_liftoff ? "IR/HEIGHT (Debounced)" : "THROTTLE TIME GATE";
+        const char* trigger_src = confirmed_liftoff ? "LIDAR/HEIGHT (Debounced)" : "THROTTLE TIME GATE";
         // Latch realistic hover baseline throttle (constrained to consistent 1280 - 1420 us range)
         flightMgr.takeoff_throttle_target = constrain((int)flightMgr.current_throttle_us, 1280, 1420);
         flightMgr.target_throttle_us      = flightMgr.takeoff_throttle_target;
         altControl.active_height_sp_cm    = max(droneState.current_height_cm, droneState.ground_height_cm);
         dualPrintln(">>> LIFTOFF CONFIRMED via " + String(trigger_src) +
-                    " (IR: " + String(ir_dist, 1) + "cm, H: " + String(droneState.current_height_cm, 1) +
+                    " (LiDAR: " + String(lidar_dist, 1) + "cm, H: " + String(droneState.current_height_cm, 1) +
                     "cm). Latching Hover Thrust: " + String(flightMgr.takeoff_throttle_target) + "us");
       }
     } else {
       // Confirm landed only when throttle drops AND sensors show near-ground
       bool landed_by_height = (droneState.current_height_cm <= (droneState.ground_height_cm + 4.0f));
-      bool landed_by_ir     = ir_valid && (ir_dist <= (droneState.ground_height_cm + 3.0f));
+      bool landed_by_lidar  = lidar_valid && (lidar_dist <= (droneState.ground_height_cm + 3.0f));
 
-      if (droneState.is_airborne && (landed_by_height || landed_by_ir || (flightMgr.base_throttle_us < MIN_ARMED_PWM + 80))) {
+      if (droneState.is_airborne && (landed_by_height || landed_by_lidar || (flightMgr.base_throttle_us < MIN_ARMED_PWM + 80))) {
         droneState.is_airborne = false;
         dualPrintln(">>> LANDED (H: " + String(droneState.current_height_cm, 1) +
-                    "cm, IR: " + String(ir_dist, 1) + "cm)");
+                    "cm, LiDAR: " + String(lidar_dist, 1) + "cm)");
       }
       droneState.above_thresh_since_ms = 0;
       lift_candidate_start_ms          = 0;
@@ -284,18 +281,17 @@ void loop() {
     disarm("CRASH PROTECTION: Tilt > 40 deg detected!");
   }
 
-  // Pure Sharp IR Ceiling Guard: Prevents drone from flying beyond the 80cm sensing ceiling
+  // Mateksys ToF LiDAR Ceiling Guard: Prevents drone from flying beyond the 185cm ceiling
   static unsigned long ceiling_violation_start_ms = 0;
-  bool near_ceiling = (droneState.current_height_cm > MAX_SAFE_CEILING_CM || droneState.raw_height_cm >= 70.0f);
+  bool near_ceiling = (droneState.current_height_cm > MAX_SAFE_CEILING_CM || droneState.raw_height_cm >= 180.0f);
   if (flightMgr.is_armed && droneState.is_airborne && near_ceiling) {
     if (ceiling_violation_start_ms == 0) ceiling_violation_start_ms = millis();
-    // Fast response: intervene within 200ms (instead of 1200ms) before drone escapes the 80cm sensing envelope
     if (millis() - ceiling_violation_start_ms >= 200) {
       if (flightMgr.flight_stage != STAGE_LANDING && flightMgr.flight_stage != STAGE_TOUCHDOWN) {
         flightMgr.flight_stage            = STAGE_LANDING;
         altControl.active_height_sp_cm    = altControl.target_height_cm;
         flightMgr.takeoff_throttle_target = max(flightMgr.takeoff_throttle_target - 100, MIN_ARMED_PWM + 80);
-        dualPrintln(">>> EMERGENCY CEILING INTERVENTION: Height near 70cm! Immediate descent triggered.");
+        dualPrintln(">>> EMERGENCY CEILING INTERVENTION: Height near 180cm! Immediate descent triggered.");
       }
     }
   } else {

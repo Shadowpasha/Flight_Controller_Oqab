@@ -37,6 +37,7 @@ class BarometerInterface {
 public:
   virtual ~BarometerInterface() {}
   virtual bool begin() = 0;
+  virtual void end() {}
   virtual void update() = 0; // Non-blocking state machine update
   virtual bool isAvailable() const = 0;
   virtual float getPressurePa() const = 0;
@@ -54,6 +55,26 @@ public:
   virtual bool isAvailable() const = 0;
   virtual const char* getDeviceName() const = 0;
   virtual bool readRaw(float &mx, float &my, float &mz) = 0;
+};
+
+// --- 6. Optical Flow Interface (Mateksys 3901-L0X / 3901-L1X via MSPv2) ---
+class OpticalFlowInterface {
+public:
+  virtual ~OpticalFlowInterface() {}
+  virtual bool begin() = 0;
+  virtual void end() {}
+  virtual void update() = 0;
+  virtual bool isUpdated() = 0;
+  virtual bool isConnected() const = 0;
+  virtual uint8_t getQuality() const = 0;
+  virtual int32_t getMotionX() const = 0;
+  virtual int32_t getMotionY() const = 0;
+  virtual float getDeltaTimeSec() const = 0;
+  virtual bool hasLidar() const { return false; }
+  virtual uint8_t getLidarQuality() const { return 0; }
+  virtual float getLidarDistanceM() const { return 0.0f; }
+  virtual uint32_t getPacketCount() const { return 0; }
+  virtual uint32_t getChecksumErrors() const { return 0; }
 };
 
 // --- 5. GPS Interface (NEO-M8N, NEO-6M, Beitian, etc.) ---
@@ -119,6 +140,9 @@ private:
 public:
   BMP180_Barometer();
   bool begin() override;
+  void end() override {
+    gpsSerial.end();
+  }
   void update() override;
   bool isAvailable() const override { return available; }
   float getPressurePa() const override { return pressure_pa; }
@@ -210,6 +234,69 @@ public:
   TinyGPSPlus& getRawGPS() { return gps; }
 };
 
+// --- Concrete Optical Flow: Mateksys 3901-L0X / 3901-L1X (MSPv2 Protocol) ---
+class Matek3901_Flow : public OpticalFlowInterface {
+private:
+  HardwareSerial flowSerial;
+  int rx_pin;
+  int tx_pin;
+  uint32_t baud;
+
+  enum ParserState {
+    P_IDLE,
+    P_HEADER_X,
+    P_HEADER_DIR,
+    P_FLAG,
+    P_CMD_LOW,
+    P_CMD_HIGH,
+    P_SIZE_LOW,
+    P_SIZE_HIGH,
+    P_PAYLOAD,
+    P_CRC
+  };
+
+  ParserState parse_state;
+  uint8_t  msg_flag;
+  uint16_t msg_cmd;
+  uint16_t msg_size;
+  uint16_t payload_idx;
+  uint8_t  payload[32];
+  uint8_t  calculated_crc;
+
+  uint8_t  quality;
+  int32_t  motion_x;
+  int32_t  motion_y;
+  uint8_t  lidar_quality;
+  int32_t  distance_mm;
+
+  unsigned long last_flow_time_ms;
+  unsigned long last_packet_time_ms;
+  float    dt_sec;
+  bool     new_data_available;
+  uint32_t total_packets;
+  uint32_t crc_errors;
+
+  void parseByte(uint8_t b);
+  void dispatchMessage();
+
+public:
+  Matek3901_Flow(int rx, int tx, uint32_t baud_rate);
+  bool begin() override;
+  void end() override;
+  void update() override;
+  bool isUpdated() override;
+  bool isConnected() const override { return (millis() - last_packet_time_ms < 1000) && (total_packets > 0); }
+  uint8_t getQuality() const override { return quality; }
+  int32_t getMotionX() const override { return motion_x; }
+  int32_t getMotionY() const override { return motion_y; }
+  float getDeltaTimeSec() const override { return dt_sec; }
+  bool hasLidar() const override { return (millis() - last_packet_time_ms < 1000) && (distance_mm > 0); }
+  uint8_t getLidarQuality() const override { return lidar_quality; }
+  float getLidarDistanceM() const override { return (distance_mm > 0) ? (distance_mm * 0.001f) : 0.0f; }
+  uint32_t getPacketCount() const override { return total_packets; }
+  uint32_t getChecksumErrors() const override { return crc_errors; }
+};
+
 // =============================================================================
 //  GLOBAL SENSOR ACCESSORS
 // =============================================================================
@@ -218,6 +305,7 @@ extern RangefinderInterface* rangeSensor;
 extern BarometerInterface*   baroSensor;
 extern CompassInterface*     compassSensor;
 extern GPSInterface*         gpsSensor;
+extern OpticalFlowInterface* flowSensor;
 
 void initSensors();
 

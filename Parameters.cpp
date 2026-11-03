@@ -56,6 +56,8 @@ static Parameter paramTable[] = {
   { "MC_YAWRATE_P",    PARAM_TYPE_FLOAT, &pidController.Kp_rate_yaw,          2.0f,    0.1f,    10.0f,  "Yaw Rate P" },
 
   // --- 4. System & Sensor Configuration (SYS_...) ---
+  { "SYS_USE_GPS",     PARAM_TYPE_BOOL,  &droneState.gps_enabled,             (float)(USE_GPS ? 1.0f : 0.0f), 0.0f, 1.0f, "Enable GPS Subsystem (0/1)" },
+  { "SYS_USE_FLOW",    PARAM_TYPE_BOOL,  &droneState.flow_enabled,            (float)(USE_OPTICAL_FLOW ? 1.0f : 0.0f), 0.0f, 1.0f, "Enable Matek Optical Flow (0/1)" },
   { "SYS_CTRL_TYPE",   PARAM_TYPE_INT,   &s_controller_type,                  (float)DEFAULT_CONTROLLER, 0.0f, 8.0f, "Active Controller (0=PID..3=MDBCI..8=VIABC)" },
   { "SYS_FLIGHT_MOD",  PARAM_TYPE_INT,   &s_flight_mode,                      0.0f,    0.0f,    2.0f,   "Flight Mode (0=CASCADE, 1=ANGLE, 2=RATE)" },
   { "MAG_DECL_DEG",    PARAM_TYPE_FLOAT, &droneState.mag_declination_deg,     0.0f,    -180.0f, 180.0f, "Magnetic Declination [deg]" },
@@ -88,6 +90,10 @@ static void applyParamHooks(int idx) {
     altControl.active_height_sp_cm = altControl.target_height_cm;
   } else if (strcmp(name, "MPC_THR_HOVER") == 0) {
     flightMgr.target_throttle_us = flightMgr.takeoff_throttle_target;
+  } else if (strcmp(name, "SYS_USE_GPS") == 0) {
+    setGPSEnabled(droneState.gps_enabled);
+  } else if (strcmp(name, "SYS_USE_FLOW") == 0) {
+    setFlowEnabled(droneState.flow_enabled);
   }
 }
 

@@ -65,5 +65,6 @@ balance_controller/
    * `arm` / `disarm` - Motor control toggle
    * `ctrl <pid|smc|adrc|mdbci|mdbcis|viabc>` - Switch active attitude controller
    * `gps` - View live GPS satellite and communication status
+   * `gps <on|off|toggle>` - Enable or completely disable GPS subsystem (saved to Flash parameter `SYS_USE_GPS`)
    * `status` - Full flight controller health report
    * `param show` - Display stored tuning parameters

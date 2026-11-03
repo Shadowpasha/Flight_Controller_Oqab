@@ -136,7 +136,7 @@ void processCommand(const char* cmd_raw) {
       getActiveController()->reset();
       resetEstimatorStates();
 
-      if (gpsSensor && gpsSensor->hasFix()) {
+      if (droneState.gps_enabled && gpsSensor && gpsSensor->hasFix()) {
         droneState.gps_home_lat = gpsSensor->getLatitude();
         droneState.gps_home_lon = gpsSensor->getLongitude();
         droneState.has_gps_home = true;
@@ -240,13 +240,10 @@ void processCommand(const char* cmd_raw) {
     if (h >= 15.0f && h <= 500.0f) {
       setParameter("MPC_Z_TARGET", h, true);
       dualPrintln("Target Hover Height set to: " + String(h, 1) + " cm (Saved to Flash)");
-#if USE_SHARP_ONLY_ALTITUDE
-      if (h > 65.0f) {
-        dualPrintln("WARNING: Target height > 65cm is near Sharp IR 80cm saturation ceiling! Safe range: 35-55cm.");
-      }
-#else
-      if (h > 80.0f) {
-        dualPrintln("NOTE: Height > 0.8m active! Utilizing Barometer + Vertical Accel fusion.");
+#if USE_LIDAR_ONLY_ALTITUDE
+      if (h > (MAX_SAFE_CEILING_CM - 20.0f)) {
+        dualPrintln("WARNING: Target height > " + String(MAX_SAFE_CEILING_CM - 20.0f, 0) +
+                    "cm is near Mateksys ToF LiDAR saturation ceiling (185cm)! Safe range: 20-150cm.");
       }
 #endif
     } else {
@@ -299,16 +296,24 @@ void processCommand(const char* cmd_raw) {
   // --- 5. HOLD SWITCHES & TUNING ---
   } else if (str.startsWith("pos_hold ")) {
     int val = str.substring(str.indexOf(' ') + 1).toInt();
-    setParameter("MPC_POS_HOLD", (float)val, true);
-    resetPositionControl();
-    dualPrintln("GPS Position Hold: " + String(posControl.pos_hold_enabled ? "ENABLED" : "DISABLED") + " (Saved to Flash)");
+    if (val && !droneState.gps_enabled && !droneState.flow_enabled) {
+      dualPrintln("WARNING: Cannot enable Position Hold without GPS or Optical Flow! Turn on flow ('flow on') or GPS ('gps on').");
+    } else {
+      setParameter("MPC_POS_HOLD", (float)val, true);
+      resetPositionControl();
+      dualPrintln("Position Hold: " + String(posControl.pos_hold_enabled ? "ENABLED" : "DISABLED") + " (Saved to Flash)");
+    }
 
   } else if (str.equalsIgnoreCase("rth")) {
-    posControl.target_pos_north_m = 0.0f;
-    posControl.target_pos_east_m  = 0.0f;
-    posControl.setpoint_latched   = true;
-    posControl.pos_hold_enabled   = true;
-    dualPrintln("--> Return-To-Home (RTH) Target set to Boot/Arm Home (0.0m, 0.0m)");
+    if (!droneState.gps_enabled) {
+      dualPrintln("ERR: Return-To-Home (RTH) requires GPS! Enable GPS first ('gps on').");
+    } else {
+      posControl.target_pos_north_m = 0.0f;
+      posControl.target_pos_east_m  = 0.0f;
+      posControl.setpoint_latched   = true;
+      posControl.pos_hold_enabled   = true;
+      dualPrintln("--> Return-To-Home (RTH) Target set to Boot/Arm Home (0.0m, 0.0m)");
+    }
 
   } else if (str.startsWith("alt_hold ")) {
     int val = str.substring(str.indexOf(' ') + 1).toInt();
@@ -507,50 +512,117 @@ void processCommand(const char* cmd_raw) {
     calibrateESCs();
 
   } else if (str.equalsIgnoreCase("home") || str.equalsIgnoreCase("gps_home")) {
-    if (gpsSensor && gpsSensor->hasFix()) {
+    if (droneState.gps_enabled && gpsSensor && gpsSensor->hasFix()) {
       droneState.gps_home_lat = gpsSensor->getLatitude();
       droneState.gps_home_lon = gpsSensor->getLongitude();
       droneState.has_gps_home = true;
       dualPrintln("--> GPS Home Reset: (" + String(droneState.gps_home_lat, 6) + ", " + String(droneState.gps_home_lon, 6) + ")");
     } else {
-      dualPrintln("ERR: No GPS Fix to set Home!");
+      dualPrintln(droneState.gps_enabled ? "ERR: No GPS Fix to set Home!" : "ERR: GPS is disabled!");
     }
 
   } else if (str.startsWith("gps_test ")) {
-    float n = 0.0f, e = 0.0f;
-    if (sscanf(str.c_str(), "gps_test %f %f", &n, &e) >= 1) {
-      droneState.kf_pos_n     = n;
-      droneState.kf_pos_e     = e;
-      droneState.pos_north_m  = n;
-      droneState.pos_east_m   = e;
-      droneState.has_gps_home = true;
-      dualPrintln("--> GPS Test Displacement set: North=" + String(n, 2) + "m, East=" + String(e, 2) + "m");
+    if (!droneState.gps_enabled) {
+      dualPrintln("ERR: GPS is disabled. Enable GPS before running gps_test ('gps on').");
     } else {
-      dualPrintln("Usage: gps_test <north_meters> <east_meters>");
+      float n = 0.0f, e = 0.0f;
+      if (sscanf(str.c_str(), "gps_test %f %f", &n, &e) >= 1) {
+        droneState.kf_pos_n     = n;
+        droneState.kf_pos_e     = e;
+        droneState.pos_north_m  = n;
+        droneState.pos_east_m   = e;
+        droneState.has_gps_home = true;
+        dualPrintln("--> GPS Test Displacement set: North=" + String(n, 2) + "m, East=" + String(e, 2) + "m");
+      } else {
+        dualPrintln("Usage: gps_test <north_meters> <east_meters>");
+      }
     }
+
+  } else if (str.equalsIgnoreCase("flow toggle")) {
+    setFlowEnabled(!droneState.flow_enabled);
+    setParameter("SYS_USE_FLOW", droneState.flow_enabled ? 1.0f : 0.0f, true);
+    dualPrintln("--> Mateksys Optical Flow: " + String(droneState.flow_enabled ? "ENABLED" : "DISABLED") + " (Saved to Flash)");
+
+  } else if (str.equalsIgnoreCase("flow on") || str.equalsIgnoreCase("flow enable") || str.equalsIgnoreCase("flow 1")) {
+    setFlowEnabled(true);
+    setParameter("SYS_USE_FLOW", 1.0f, true);
+    dualPrintln("--> Mateksys Optical Flow: ENABLED (Saved to Flash)");
+
+  } else if (str.equalsIgnoreCase("flow off") || str.equalsIgnoreCase("flow disable") || str.equalsIgnoreCase("flow 0")) {
+    setFlowEnabled(false);
+    setParameter("SYS_USE_FLOW", 0.0f, true);
+    dualPrintln("--> Mateksys Optical Flow: DISABLED (Saved to Flash)");
+
+  } else if (str.equalsIgnoreCase("flow")) {
+    dualPrintln("\n=== MATEKSYS OPTICAL FLOW & LIDAR REPORT ===");
+    if (!droneState.flow_enabled) {
+      dualPrintln("  • Subsystem    : DISABLED (Type 'flow on' to activate)");
+      dualPrintln("  • Parameter    : SYS_USE_FLOW = 0");
+    } else {
+      bool connected = flowSensor && flowSensor->isConnected();
+      uint8_t q      = flowSensor ? flowSensor->getQuality() : 0;
+      int32_t mx     = flowSensor ? flowSensor->getMotionX() : 0;
+      int32_t my     = flowSensor ? flowSensor->getMotionY() : 0;
+      uint32_t pkts  = flowSensor ? flowSensor->getPacketCount() : 0;
+      uint32_t errs  = flowSensor ? flowSensor->getChecksumErrors() : 0;
+
+      dualPrintln("  • Subsystem    : ENABLED @ " + String(FLOW_BAUD) + " baud (MSPv2)");
+      dualPrintln("  • Link Status  : " + String(connected ? "ONLINE (Receiving MSPv2 Telemetry)" : "NO DATA (Check Pin 16 / 5V)"));
+      dualPrintln("  • Surface Qual : " + String(q) + " / 255 (" + String(droneState.flow_valid ? "VALID TRACKING" : "POOR/UNRELIABLE") + ")");
+      dualPrintln("  • Raw Motion   : dX=" + String(mx) + " counts, dY=" + String(my) + " counts");
+      dualPrintln("  • Body Velocity: Forward=" + String(droneState.flow_vel_body_x, 2) + " m/s, Right=" + String(droneState.flow_vel_body_y, 2) + " m/s");
+      dualPrintln("  • World Velocity: North=" + String(droneState.flow_vel_north_mps, 2) + " m/s, East=" + String(droneState.flow_vel_east_mps, 2) + " m/s");
+      if (flowSensor && flowSensor->hasLidar()) {
+        dualPrintln("  • Onboard LiDAR: Distance=" + String(flowSensor->getLidarDistanceM() * 100.0f, 1) + " cm | Quality=" + String(flowSensor->getLidarQuality()));
+      }
+      dualPrintln("  • Packets / Err: " + String(pkts) + " packets received | " + String(errs) + " CRC errors");
+    }
+    dualPrintln("============================================\n");
+
+  } else if (str.equalsIgnoreCase("gps toggle")) {
+    setGPSEnabled(!droneState.gps_enabled);
+    setParameter("SYS_USE_GPS", droneState.gps_enabled ? 1.0f : 0.0f, true);
+    dualPrintln("--> GPS Subsystem: " + String(droneState.gps_enabled ? "ENABLED" : "DISABLED") + " (Saved to Flash)");
+
+  } else if (str.equalsIgnoreCase("gps on") || str.equalsIgnoreCase("gps enable") || str.equalsIgnoreCase("gps 1") || str.equalsIgnoreCase("gps_on")) {
+    setGPSEnabled(true);
+    setParameter("SYS_USE_GPS", 1.0f, true);
+    dualPrintln("--> GPS Subsystem: ENABLED (Saved to Flash)");
+
+  } else if (str.equalsIgnoreCase("gps off") || str.equalsIgnoreCase("gps disable") || str.equalsIgnoreCase("gps 0") || str.equalsIgnoreCase("gps_off")) {
+    setGPSEnabled(false);
+    setParameter("SYS_USE_GPS", 0.0f, true);
+    dualPrintln("--> GPS Subsystem: DISABLED (Saved to Flash)");
 
   } else if (str.equalsIgnoreCase("gps")) {
     dualPrintln("\n=== GPS DIAGNOSTIC REPORT ===");
-    bool connected = gpsSensor && gpsSensor->isConnected();
-    bool fix = gpsSensor && gpsSensor->hasFix();
-    uint32_t chars = gpsSensor ? gpsSensor->getCharsSeen() : 0;
-    uint32_t errs = gpsSensor ? gpsSensor->getChecksumErrors() : 0;
-    int sats = gpsSensor ? gpsSensor->getSatellites() : 0;
-    float hdop = gpsSensor ? gpsSensor->getHDOP() : 99.9f;
-
-    dualPrintln("  • Serial Bytes : " + String(chars) + " bytes received (Errors: " + String(errs) + ")");
-    dualPrintln("  • Link Status  : " + String(connected ? "ONLINE (Receiving NMEA Data)" : "NO DATA (Check Pin 16 / Power)"));
-    dualPrintln("  • Fix Status   : " + String(fix ? "3D FIX LOCKED" : (connected ? "SEARCHING FOR SATELLITES" : "NO COMM")));
-    dualPrintln("  • Satellites   : " + String(sats));
-    dualPrintln("  • HDOP         : " + String(hdop, 2));
-    if (fix) {
-      dualPrintln("  • Coordinates  : Lat=" + String(gpsSensor->getLatitude(), 6) + ", Lon=" + String(gpsSensor->getLongitude(), 6));
-      dualPrintln("  • Altitude     : " + String(gpsSensor->getAltitudeM(), 1) + " m");
-      dualPrintln("  • Speed        : " + String(gpsSensor->getSpeedMps(), 2) + " m/s");
-    } else if (connected) {
-      dualPrintln("  [NOTE] Hardware is communicating properly. The GPS needs 35-90s under clear open sky to acquire lock.");
+    if (!droneState.gps_enabled) {
+      dualPrintln("  • Subsystem    : DISABLED (GPS bypass active)");
+      dualPrintln("  • Commands     : 'gps on' to enable, 'gps off' to disable, 'gps toggle'");
+      dualPrintln("  • Parameter    : SYS_USE_GPS = 0");
     } else {
-      dualPrintln("  [ERROR] Zero bytes arriving on ESP32 RX Pin 16. Verify: GPS TX -> Pin 16, 5V & GND connected.");
+      bool connected = gpsSensor && gpsSensor->isConnected();
+      bool fix = gpsSensor && gpsSensor->hasFix();
+      uint32_t chars = gpsSensor ? gpsSensor->getCharsSeen() : 0;
+      uint32_t errs = gpsSensor ? gpsSensor->getChecksumErrors() : 0;
+      int sats = gpsSensor ? gpsSensor->getSatellites() : 0;
+      float hdop = gpsSensor ? gpsSensor->getHDOP() : 99.9f;
+
+      dualPrintln("  • Subsystem    : ENABLED");
+      dualPrintln("  • Serial Bytes : " + String(chars) + " bytes received (Errors: " + String(errs) + ")");
+      dualPrintln("  • Link Status  : " + String(connected ? "ONLINE (Receiving NMEA Data)" : "NO DATA (Check Pin 16 / Power)"));
+      dualPrintln("  • Fix Status   : " + String(fix ? "3D FIX LOCKED" : (connected ? "SEARCHING FOR SATELLITES" : "NO COMM")));
+      dualPrintln("  • Satellites   : " + String(sats));
+      dualPrintln("  • HDOP         : " + String(hdop, 2));
+      if (fix) {
+        dualPrintln("  • Coordinates  : Lat=" + String(gpsSensor->getLatitude(), 6) + ", Lon=" + String(gpsSensor->getLongitude(), 6));
+        dualPrintln("  • Altitude     : " + String(gpsSensor->getAltitudeM(), 1) + " m");
+        dualPrintln("  • Speed        : " + String(gpsSensor->getSpeedMps(), 2) + " m/s");
+      } else if (connected) {
+        dualPrintln("  [NOTE] Hardware is communicating properly. The GPS needs 35-90s under clear open sky to acquire lock.");
+      } else {
+        dualPrintln("  [ERROR] Zero bytes arriving on ESP32 RX Pin 16. Verify: GPS TX -> Pin 16, 5V & GND connected.");
+      }
     }
     dualPrintln("==============================\n");
 
@@ -566,24 +638,32 @@ void processCommand(const char* cmd_raw) {
                 " | Mode: " + String(getFlightModeName()) +
                 " | Armed: " + String(flightMgr.is_armed ? "YES" : "NO") +
                 " | Stage: " + String(flightMgr.flight_stage));
-    const char* zone_str = (droneState.kf_z < 0.50f) ? "LOW (<0.5m: GroundEffect Dampened)" :
-                           ((droneState.kf_z <= 0.80f) ? "TRANSITION (0.5m-0.8m: Dynamic R)" : "HIGH (>0.8m: Pure Baro+Acc EKF)");
-    dualPrintln("Kalman Filter: Alt=" + String(droneState.kf_z * 100.0f, 1) + "cm | Vz=" + String(droneState.kf_vz * 100.0f, 1) + "cm/s | Zone: " + String(zone_str));
-    dualPrintln("Sharp IR: Raw=" + String(droneState.raw_height_cm, 1) + "cm | GroundRef=" + String(droneState.ground_height_cm, 1) + "cm | Valid=" + String(droneState.rf_valid ? "YES" : "NO"));
-    if (baroSensor && baroSensor->isAvailable()) {
-      dualPrintln("Baro BMP180: Pres=" + String(droneState.baro_pressure_pa / 100.0f, 2) + " hPa | RawAlt=" + String(droneState.baro_raw_alt_cm, 1) + "cm");
-    } else {
-      dualPrintln("Baro BMP180: OFFLINE (Sharp IR only <= 0.8m)");
-    }
+    dualPrintln("Kalman Filter: Alt=" + String(droneState.kf_z * 100.0f, 1) + "cm | Vz=" + String(droneState.kf_vz * 100.0f, 1) + "cm/s (Pure Mateksys ToF LiDAR Mode)");
+    dualPrintln("ToF LiDAR: Raw=" + String(droneState.raw_height_cm, 1) + "cm | GroundRef=" + String(droneState.ground_height_cm, 1) +
+                "cm | Valid=" + String(droneState.rf_valid ? "YES" : "NO") +
+                " | Qual=" + String(flowSensor ? flowSensor->getLidarQuality() : 0));
+    dualPrintln("Baro & Sharp IR: DEWIRED / REMOVED");
     dualPrintln("Altitude (PX4 Cascade): Target=" + String(altControl.target_height_cm, 1) + "cm | Vz=" + String(droneState.kf_vz, 2) + "m/s | Adj=" + String(altControl.alt_throttle_adj, 1) + "us");
 
-    bool gps_online = gpsSensor && gpsSensor->isConnected();
-    bool has_gps_fix = gps_online && gpsSensor->hasFix();
-    dualPrintln("GPS Hardware: " + String(gps_online ? "ONLINE (NMEA 9600)" : "OFFLINE / DISCONNECTED") +
-                " | Status: " + String(has_gps_fix ? "3D FIX" : (gps_online ? "SEARCHING FOR SATS" : "NO COMM")) +
-                " | Sats=" + String(gpsSensor ? gpsSensor->getSatellites() : 0) +
-                " | HDOP=" + String(gpsSensor ? gpsSensor->getHDOP() : 99.9f, 2) +
-                " | Est. Acc: ±" + String(droneState.gps_accuracy_est_m, 1) + "m");
+    if (droneState.flow_enabled) {
+      bool flow_online = flowSensor && flowSensor->isConnected();
+      dualPrintln("Optical Flow: " + String(flow_online ? "ONLINE (Mateksys 3901-L0X @ 115200)" : "NO DATA (Check Pin 16 / 5V)") +
+                  " | Tracking: " + String(droneState.flow_valid ? "LOCKED" : "POOR/UNRELIABLE") +
+                  " | Qual: " + String(droneState.flow_quality) +
+                  " | V_fwd: " + String(droneState.flow_vel_body_x, 2) + "m/s" +
+                  " | V_right: " + String(droneState.flow_vel_body_y, 2) + "m/s" +
+                  " | Lidar: " + String(droneState.flow_lidar_dist_m * 100.0f, 1) + "cm");
+    } else if (!droneState.gps_enabled) {
+      dualPrintln("GPS Subsystem: DISABLED (Manual/Inertial only) | Status: DISABLED");
+    } else {
+      bool gps_online = gpsSensor && gpsSensor->isConnected();
+      bool has_gps_fix = gps_online && gpsSensor->hasFix();
+      dualPrintln("GPS Hardware: " + String(gps_online ? "ONLINE (NMEA 9600)" : "OFFLINE / DISCONNECTED") +
+                  " | Status: " + String(has_gps_fix ? "3D FIX" : (gps_online ? "SEARCHING FOR SATS" : "NO COMM")) +
+                  " | Sats=" + String(gpsSensor ? gpsSensor->getSatellites() : 0) +
+                  " | HDOP=" + String(gpsSensor ? gpsSensor->getHDOP() : 99.9f, 2) +
+                  " | Est. Acc: ±" + String(droneState.gps_accuracy_est_m, 1) + "m");
+    }
     const char* home_name = (droneState.home_type == DroneState::HOME_ARM) ? "ARM_POINT" : "BOOT_POINT";
     dualPrintln("Dead Reckoning Home: [" + String(home_name) + "] | 2D Dist: " + String(droneState.dist_from_home_2d_m, 2) + "m | 3D Dist: " + String(droneState.dist_from_home_3d_m, 2) + "m");
     dualPrintln("  • DR Pos: dN=" + String(droneState.dr_pos_x_m, 2) + "m | dE=" + String(droneState.dr_pos_y_m, 2) + "m | dAlt=" + String(droneState.dr_pos_z_m, 2) + "m (" + String(droneState.current_height_cm, 1) + "cm AGL)");
@@ -656,59 +736,51 @@ void print3DPositionReport() {
   dualPrintln("  • 3D Speed Mag   : " + String(droneState.speed_3d_mps, 3) + " m/s (Total velocity magnitude)");
 
   // 5. Horizontal Accuracy & GPS Sensors
-  bool gps_online = gpsSensor && gpsSensor->isConnected();
-  bool has_gps_fix = gps_online && gpsSensor->hasFix();
-  int sats = gpsSensor ? gpsSensor->getSatellites() : 0;
-  float hdop = gpsSensor ? gpsSensor->getHDOP() : 99.9f;
   dualPrintln("\n[5. HORIZONTAL ACCURACY & GPS SENSOR VERIFICATION]");
-  dualPrintln("  • Hardware Status: " + String(gps_online ? "ONLINE (NMEA 9600 baud)" : "OFFLINE / DISCONNECTED (Check RX:16 TX:17)"));
-  dualPrintln("  • GPS Fix Status : " + String(has_gps_fix ? "3D FIX LOCKED" : (gps_online ? "SEARCHING FOR SATELLITES" : "NO COMM")));
-  dualPrintln("  • Satellites     : " + String(sats));
-  dualPrintln("  • HDOP           : " + String(hdop, 2) +
-              " (Estimated 1-Sigma Horiz Accuracy: ±" + String(droneState.gps_accuracy_est_m, 2) + " m)");
-  if (droneState.has_gps_home) {
-    if (gpsSensor && gpsSensor->isUpdated()) {
-      dualPrintln("  • Current Coords : Lat=" + String(gpsSensor->getLatitude(), 6) +
-                  ", Lon=" + String(gpsSensor->getLongitude(), 6));
-    }
-    dualPrintln("  • Raw GPS Disp   : North=" + String(droneState.raw_pos_north_m, 3) +
-                " m, East=" + String(droneState.raw_pos_east_m, 3) + " m");
-    float diff_n = droneState.dr_pos_x_m - droneState.raw_pos_north_m;
-    float diff_e = droneState.dr_pos_y_m - droneState.raw_pos_east_m;
-    dualPrintln("  • DR Fused vs Raw: dNorth=" + String(diff_n, 3) +
-                " m, dEast=" + String(diff_e, 3) + " m (KF Filter Tracking Diff)");
-    dualPrintln("  • Accel Bias Est : North=" + String(droneState.kf_ba_n, 3) +
-                " m/s², East=" + String(droneState.kf_ba_e, 3) + " m/s²");
+  if (!droneState.gps_enabled) {
+    dualPrintln("  • GPS Subsystem  : DISABLED by user configuration (Bypass active)");
+    dualPrintln("  • Navigation Mode: Pure Inertial Dead Reckoning (Home at boot/arm origin)");
   } else {
-    dualPrintln("  • GPS Home       : GPS Fix pending, using inertial Dead Reckoning from boot origin");
+    bool gps_online = gpsSensor && gpsSensor->isConnected();
+    bool has_gps_fix = gps_online && gpsSensor->hasFix();
+    int sats = gpsSensor ? gpsSensor->getSatellites() : 0;
+    float hdop = gpsSensor ? gpsSensor->getHDOP() : 99.9f;
+    dualPrintln("  • Hardware Status: " + String(gps_online ? "ONLINE (NMEA 9600 baud)" : "OFFLINE / DISCONNECTED (Check RX:16 TX:17)"));
+    dualPrintln("  • GPS Fix Status : " + String(has_gps_fix ? "3D FIX LOCKED" : (gps_online ? "SEARCHING FOR SATELLITES" : "NO COMM")));
+    dualPrintln("  • Satellites     : " + String(sats));
+    dualPrintln("  • HDOP           : " + String(hdop, 2) +
+                " (Estimated 1-Sigma Horiz Accuracy: ±" + String(droneState.gps_accuracy_est_m, 2) + " m)");
+    if (droneState.has_gps_home) {
+      if (gpsSensor && gpsSensor->isUpdated()) {
+        dualPrintln("  • Current Coords : Lat=" + String(gpsSensor->getLatitude(), 6) +
+                    ", Lon=" + String(gpsSensor->getLongitude(), 6));
+      }
+      dualPrintln("  • Raw GPS Disp   : North=" + String(droneState.raw_pos_north_m, 3) +
+                  " m, East=" + String(droneState.raw_pos_east_m, 3) + " m");
+      float diff_n = droneState.dr_pos_x_m - droneState.raw_pos_north_m;
+      float diff_e = droneState.dr_pos_y_m - droneState.raw_pos_east_m;
+      dualPrintln("  • DR Fused vs Raw: dNorth=" + String(diff_n, 3) +
+                  " m, dEast=" + String(diff_e, 3) + " m (KF Filter Tracking Diff)");
+      dualPrintln("  • Accel Bias Est : North=" + String(droneState.kf_ba_n, 3) +
+                  " m/s², East=" + String(droneState.kf_ba_e, 3) + " m/s²");
+    } else {
+      dualPrintln("  • GPS Home       : GPS Fix pending, using inertial Dead Reckoning from boot origin");
+    }
   }
 
   // 6. Vertical Accuracy & Altitude Sensors
-#if USE_SHARP_ONLY_ALTITUDE
-  const char* alt_src_str = "Pure Sharp GP2Y0A IR Rangefinder (Single-Sensor Mode, Baro Bypassed)";
-#else
-  const char* alt_src_str = (droneState.active_alt_source == ALT_SOURCE_SHARP) ?
-                            "Sharp GP2Y0A IR Rangefinder (Low-Altitude Precision)" :
-                            "BMP180 Barometer + Accel EKF (Medium/High Altitude)";
-#endif
-  float baro_agl_cm = (droneState.baro_raw_alt_cm - droneState.baro_ground_offset_m * 100.0f);
-  if (baro_agl_cm < -500.0f || baro_agl_cm > 10000.0f) baro_agl_cm = 0.0f;
+  const char* alt_src_str = "Mateksys ToF LiDAR (VL53 0-200cm, Barometer & Sharp IR Removed)";
   dualPrintln("\n[6. VERTICAL ACCURACY & ALTITUDE SENSORS VERIFICATION]");
   dualPrintln("  • Active Source  : " + String(alt_src_str));
   dualPrintln("  • Fused Height Z : " + String(droneState.current_height_cm, 1) + " cm  (" +
               String(droneState.kf_z, 2) + " m)");
-  dualPrintln("  • Sharp IR Raw   : " + String(droneState.raw_height_cm, 1) + " cm (Tilt-Corrected: " +
+  dualPrintln("  • ToF LiDAR Raw  : " + String(droneState.raw_height_cm, 1) + " cm (Tilt-Corrected: " +
               String(droneState.z_rf_corrected_m * 100.0f, 1) + " cm, Valid: " +
               String(droneState.rf_valid ? "YES" : "NO") + ")");
-  if (baroSensor && baroSensor->isAvailable()) {
-    dualPrintln("  • Baro BMP180    : " + String(baro_agl_cm, 1) + " cm AGL (Pres: " +
-                String(droneState.baro_pressure_pa / 100.0f, 2) + " hPa)");
-  } else {
-    dualPrintln("  • Baro BMP180    : OFFLINE");
-  }
+  dualPrintln("  • Baro & Sharp IR: DEWIRED / REMOVED (No baro noise or IR saturation)");
   dualPrintln("  • Ground Baseline: " + String(droneState.ground_height_cm, 1) + " cm baseline");
   if (droneState.rf_valid) {
-    dualPrintln("  • IR vs Fused Z  : Diff=" + String(droneState.current_height_cm - droneState.raw_height_cm, 1) + " cm");
+    dualPrintln("  • LiDAR vs Fused : Diff=" + String(droneState.current_height_cm - droneState.raw_height_cm, 1) + " cm");
   }
   dualPrintln("  • Vert Bias Est  : Accel Bias=" + String(droneState.kf_ba, 3) + " m/s²");
 
@@ -731,7 +803,8 @@ void sendTelemetry(bool is_armed, bool sim_mode, FlightStage stage, FlightMode m
   if (is_armed && !sim_mode) return; // Mute all telemetry when armed unless in sim mode
 
   char t_buf[320];
-  const char* alt_tag = (droneState.active_alt_source == ALT_SOURCE_SHARP) ? "SHP" : "BAR";
+  const char* alt_tag = (droneState.active_alt_source == ALT_SOURCE_LIDAR) ? "LID" :
+                        ((droneState.active_alt_source == ALT_SOURCE_SHARP) ? "SHP" : "BAR");
   const char* ctrl_tag = getActiveControllerName();
   const char* mode_tag = (mode == MODE_CASCADE) ? "CAS" : ((mode == MODE_ANGLE) ? "ANG" : "RAT");
   const char* home_tag = getHomeOriginTypeName(); // "BOOT" or "ARM"
@@ -751,29 +824,33 @@ void sendTelemetry(bool is_armed, bool sim_mode, FlightStage stage, FlightMode m
     snprintf(state_tag, sizeof(state_tag), "ARM%s", stg);
   }
 
-  // GPS Fix & accuracy string
-  bool is_connected = gpsSensor && gpsSensor->isConnected();
-  bool has_fix = is_connected && gpsSensor->hasFix();
-  int sats = gpsSensor ? gpsSensor->getSatellites() : 0;
-  float hdop = gpsSensor ? gpsSensor->getHDOP() : 99.9f;
-
+  // Horizontal sensor telemetry tag (Flow or GPS)
   char gps_str[36];
-  if (has_fix) {
-    snprintf(gps_str, sizeof(gps_str), "3D-FIX(%dS,H:%.1f,~%.1fm)", sats, hdop, droneState.gps_accuracy_est_m);
-  } else if (is_connected) {
-    snprintf(gps_str, sizeof(gps_str), "SEARCHING(%dS)", sats);
+  if (droneState.flow_enabled) {
+    float fspd = sqrtf(droneState.flow_vel_body_x * droneState.flow_vel_body_x +
+                       droneState.flow_vel_body_y * droneState.flow_vel_body_y);
+    snprintf(gps_str, sizeof(gps_str), "FLOW(Q:%d,Spd:%.2f)", droneState.flow_quality, fspd);
+  } else if (!droneState.gps_enabled) {
+    snprintf(gps_str, sizeof(gps_str), "DISABLED");
   } else {
-    snprintf(gps_str, sizeof(gps_str), "NO-COMM(Check RX:16)");
+    bool is_connected = gpsSensor && gpsSensor->isConnected();
+    bool has_fix = is_connected && gpsSensor->hasFix();
+    int sats = gpsSensor ? gpsSensor->getSatellites() : 0;
+    float hdop = gpsSensor ? gpsSensor->getHDOP() : 99.9f;
+
+    if (has_fix) {
+      snprintf(gps_str, sizeof(gps_str), "3D-FIX(%dS,H:%.1f,~%.1fm)", sats, hdop, droneState.gps_accuracy_est_m);
+    } else if (is_connected) {
+      snprintf(gps_str, sizeof(gps_str), "SEARCHING(%dS)", sats);
+    } else {
+      snprintf(gps_str, sizeof(gps_str), "NO-COMM(Check RX:16)");
+    }
   }
 
-  // Barometer altitude relative to ground
-  float baro_agl_cm = (droneState.baro_raw_alt_cm - droneState.baro_ground_offset_m * 100.0f);
-  if (baro_agl_cm < -500.0f || baro_agl_cm > 10000.0f) baro_agl_cm = 0.0f;
-
   // Structured Dead Reckoning telemetry line:
-  // [DEAD-RECKONING] Home:%s | Dist: 2D=%5.2fm, 3D=%5.2fm | Pos: dN=%+6.2fm, dE=%+6.2fm, dAlt=%+5.2fm(%3.0fcm) | Vel: Vn=%+5.2fm/s, Ve=%+5.2fm/s, Vz=%+5.2fm/s (Spd:%.2f) | Acc: GPS[%s] Raw:(%+.2f,%+.2f)m Alt:%s[IR:%.1f,Bar:%.1f]cm | %s [%s|%s]
+  // [DEAD-RECKONING] Home:%s | Dist: 2D=%5.2fm, 3D=%5.2fm | Pos: dN=%+6.2fm, dE=%+6.2fm, dAlt=%+5.2fm(%3.0fcm) | Vel: Vn=%+5.2fm/s, Ve=%+5.2fm/s, Vz=%+5.2fm/s (Spd:%.2f) | Acc: GPS[%s] Raw:(%+.2f,%+.2f)m Alt:%s[LIDAR:%.1f]cm | %s [%s|%s]
   snprintf(t_buf, sizeof(t_buf),
-           "[DEAD-RECKONING] Home:%s | Dist: 2D=%5.2fm, 3D=%5.2fm | Pos: dN=%+6.2fm, dE=%+6.2fm, dAlt=%+5.2fm(%3.0fcm) | Vel: Vn=%+5.2fm/s, Ve=%+5.2fm/s, Vz=%+5.2fm/s (Spd:%.2f) | Acc: GPS[%s] Raw:(%+.2f,%+.2f)m Alt:%s[IR:%.1f,Bar:%.1f]cm | %s [%s|%s]",
+           "[DEAD-RECKONING] Home:%s | Dist: 2D=%5.2fm, 3D=%5.2fm | Pos: dN=%+6.2fm, dE=%+6.2fm, dAlt=%+5.2fm(%3.0fcm) | Vel: Vn=%+5.2fm/s, Ve=%+5.2fm/s, Vz=%+5.2fm/s (Spd:%.2f) | Acc: GPS[%s] Raw:(%+.2f,%+.2f)m Alt:%s[LIDAR:%.1f]cm | %s [%s|%s]",
            home_tag,
            droneState.dist_from_home_2d_m,
            droneState.dist_from_home_3d_m,
@@ -790,7 +867,6 @@ void sendTelemetry(bool is_armed, bool sim_mode, FlightStage stage, FlightMode m
            droneState.raw_pos_east_m,
            alt_tag,
            droneState.raw_height_cm,
-           baro_agl_cm,
            state_tag,
            ctrl_tag,
            mode_tag);

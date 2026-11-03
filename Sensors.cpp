@@ -411,6 +411,136 @@ void NEO_M8N_GPS::update() {
 }
 
 // =============================================================================
+//  MATEKSYS 3901-L0X / 3901-L1X OPTICAL FLOW & LIDAR (MSPV2 DRIVER)
+// =============================================================================
+static uint8_t flow_crc8_dvb_s2(uint8_t crc, uint8_t ch) {
+  crc ^= ch;
+  for (int i = 0; i < 8; ++i) {
+    if (crc & 0x80) crc = (crc << 1) ^ 0xD5;
+    else crc = (crc << 1);
+  }
+  return crc;
+}
+
+Matek3901_Flow::Matek3901_Flow(int rx, int tx, uint32_t baud_rate)
+  : flowSerial(2), rx_pin(rx), tx_pin(tx), baud(baud_rate),
+    parse_state(P_IDLE), msg_flag(0), msg_cmd(0), msg_size(0), payload_idx(0),
+    calculated_crc(0), quality(0), motion_x(0), motion_y(0), lidar_quality(0),
+    distance_mm(0), last_flow_time_ms(0), last_packet_time_ms(0), dt_sec(0.02f),
+    new_data_available(false), total_packets(0), crc_errors(0) {}
+
+bool Matek3901_Flow::begin() {
+  flowSerial.begin(baud, SERIAL_8N1, rx_pin, tx_pin);
+  delay(10);
+  parse_state = P_IDLE;
+  last_flow_time_ms = millis();
+  return true;
+}
+
+void Matek3901_Flow::end() {
+  flowSerial.end();
+}
+
+void Matek3901_Flow::dispatchMessage() {
+  total_packets++;
+  last_packet_time_ms = millis();
+
+  if (msg_cmd == 0x1F02 && msg_size >= 9) { // MSP2_SENSOR_OPTIC_FLOW
+    quality  = payload[0];
+    motion_x = (int32_t)((uint32_t)payload[1] | ((uint32_t)payload[2] << 8) | ((uint32_t)payload[3] << 16) | ((uint32_t)payload[4] << 24));
+    motion_y = (int32_t)((uint32_t)payload[5] | ((uint32_t)payload[6] << 8) | ((uint32_t)payload[7] << 16) | ((uint32_t)payload[8] << 24));
+    
+    unsigned long now = millis();
+    if (last_flow_time_ms > 0 && now > last_flow_time_ms) {
+      dt_sec = (now - last_flow_time_ms) / 1000.0f;
+      if (dt_sec < 0.005f || dt_sec > 0.10f) dt_sec = 0.02f;
+    } else {
+      dt_sec = 0.02f;
+    }
+    last_flow_time_ms = now;
+    new_data_available = true;
+
+  } else if (msg_cmd == 0x1F01 && msg_size >= 5) { // MSP2_SENSOR_RANGEFINDER
+    lidar_quality = payload[0];
+    distance_mm   = (int32_t)((uint32_t)payload[1] | ((uint32_t)payload[2] << 8) | ((uint32_t)payload[3] << 16) | ((uint32_t)payload[4] << 24));
+  }
+}
+
+void Matek3901_Flow::parseByte(uint8_t b) {
+  switch (parse_state) {
+    case P_IDLE:
+      if (b == '$') parse_state = P_HEADER_X;
+      break;
+    case P_HEADER_X:
+      parse_state = (b == 'X') ? P_HEADER_DIR : P_IDLE;
+      break;
+    case P_HEADER_DIR:
+      if (b == '<') {
+        parse_state = P_FLAG;
+        calculated_crc = 0;
+      } else {
+        parse_state = P_IDLE;
+      }
+      break;
+    case P_FLAG:
+      msg_flag = b;
+      calculated_crc = flow_crc8_dvb_s2(calculated_crc, b);
+      parse_state = P_CMD_LOW;
+      break;
+    case P_CMD_LOW:
+      msg_cmd = b;
+      calculated_crc = flow_crc8_dvb_s2(calculated_crc, b);
+      parse_state = P_CMD_HIGH;
+      break;
+    case P_CMD_HIGH:
+      msg_cmd |= ((uint16_t)b << 8);
+      calculated_crc = flow_crc8_dvb_s2(calculated_crc, b);
+      parse_state = P_SIZE_LOW;
+      break;
+    case P_SIZE_LOW:
+      msg_size = b;
+      calculated_crc = flow_crc8_dvb_s2(calculated_crc, b);
+      parse_state = P_SIZE_HIGH;
+      break;
+    case P_SIZE_HIGH:
+      msg_size |= ((uint16_t)b << 8);
+      calculated_crc = flow_crc8_dvb_s2(calculated_crc, b);
+      payload_idx = 0;
+      if (msg_size > sizeof(payload)) parse_state = P_IDLE;
+      else if (msg_size == 0) parse_state = P_CRC;
+      else parse_state = P_PAYLOAD;
+      break;
+    case P_PAYLOAD:
+      payload[payload_idx++] = b;
+      calculated_crc = flow_crc8_dvb_s2(calculated_crc, b);
+      if (payload_idx >= msg_size) parse_state = P_CRC;
+      break;
+    case P_CRC:
+      if (calculated_crc == b) dispatchMessage();
+      else crc_errors++;
+      parse_state = P_IDLE;
+      break;
+  }
+}
+
+void Matek3901_Flow::update() {
+  while (flowSerial.available() > 0) {
+    parseByte((uint8_t)flowSerial.read());
+  }
+}
+
+bool Matek3901_Flow::isUpdated() {
+  if (new_data_available) {
+    new_data_available = false;
+    return true;
+  }
+  return false;
+}
+
+static Matek3901_Flow static_flow(FLOW_RX_PIN, FLOW_TX_PIN, FLOW_BAUD);
+OpticalFlowInterface* flowSensor = &static_flow;
+
+// =============================================================================
 //  SENSOR INITIALIZER
 // =============================================================================
 void initSensors() {
@@ -419,4 +549,5 @@ void initSensors() {
   baroSensor    = &static_bmp;
   compassSensor = &static_compass;
   gpsSensor     = &static_gps;
+  flowSensor    = &static_flow;
 }

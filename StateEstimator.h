@@ -51,6 +51,21 @@ struct DroneState {
   float mag_offset_y;
   float mag_offset_z;
 
+  // --- GPS & Optical Flow Subsystem Toggles ---
+  bool   gps_enabled;
+  bool   flow_enabled;
+  bool   flow_valid;
+  uint8_t flow_quality;
+  int32_t flow_raw_x;
+  int32_t flow_raw_y;
+  float   flow_vel_body_x;      // Body forward velocity from flow (m/s)
+  float   flow_vel_body_y;      // Body rightward velocity from flow (m/s)
+  float   flow_vel_north_mps;   // Earth-frame North velocity from flow (m/s)
+  float   flow_vel_east_mps;    // Earth-frame East velocity from flow (m/s)
+  float   flow_lidar_dist_m;    // Matek onboard LiDAR height (m)
+  uint8_t flow_lidar_quality;
+  uint32_t flow_packets_seen;
+
   // --- Home Reference & Dead Reckoning Origin ---
   enum HomeOriginType { HOME_BOOT = 0, HOME_ARM = 1 };
   HomeOriginType home_type;
@@ -128,5 +143,8 @@ void updatePositionEstimator(float dt, bool is_armed);
 void updateCompassEstimator();
 void calibrateCompassRoutine();
 void resetEstimatorStates();
+void setGPSEnabled(bool enable);
+void setFlowEnabled(bool enable);
+void updateOpticalFlowEstimator(float dt, bool is_airborne);
 
 #endif // STATE_ESTIMATOR_H
