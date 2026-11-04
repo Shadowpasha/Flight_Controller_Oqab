@@ -1,5 +1,6 @@
 #include "Comms.h"
 #include "FlightState.h"
+#include "Sensors.h"
 #include "StateEstimator.h"
 #include "Controllers.h"
 #include "Motors.h"
@@ -28,6 +29,63 @@ void initComms() {
   if (!SerialBT.begin(BT_DEVICE_NAME)) {
     Serial.println("FATAL: Bluetooth initialization failed!");
     while (1) delay(100);
+  }
+}
+
+// =============================================================================
+//  FreeRTOS Core 0 Task: UART Parsing, Comms & Telemetry
+//  Offloads serial parsing, Flash NVS parameter commits, and telemetry strings
+//  from the real-time 250 Hz attitude control loop on Core 1.
+// =============================================================================
+static TaskHandle_t commsTaskHandle = NULL;
+
+static void commsTask(void* pvParameters) {
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  const TickType_t xFrequency = pdMS_TO_TICKS(10); // 100 Hz comms loop
+
+  uint32_t telemetry_counter = 0;
+
+  for (;;) {
+    // 1. Drain and parse incoming UART streams (Optical Flow MSPv2 / GPS NMEA)
+    if (droneState.flow_enabled && flowSensor) {
+      flowSensor->update();
+    }
+    if (droneState.gps_enabled && gpsSensor) {
+      gpsSensor->update();
+    }
+
+    // 2. Process incoming commands from USB Serial and Bluetooth SPP
+    handleInputCommands();
+
+    // 3. Periodic telemetry transmission (only when disarmed or in sim mode)
+    if (!flightMgr.is_armed || flightMgr.sim_mode) {
+      // 100 Hz / 5 = 20 Hz disarmed telemetry, 100 Hz / 2 = 50 Hz sim telemetry
+      uint32_t telemetry_interval = flightMgr.sim_mode ? 2 : 5;
+      if (++telemetry_counter >= telemetry_interval) {
+        telemetry_counter = 0;
+        sendTelemetry(flightMgr.is_armed, flightMgr.sim_mode, flightMgr.flight_stage,
+                      flightMgr.current_mode, flightMgr.base_throttle_us,
+                      flightMgr.telemetry_out_roll, flightMgr.telemetry_out_pitch, flightMgr.telemetry_out_yaw);
+      }
+    } else {
+      telemetry_counter = 0;
+    }
+
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
+  }
+}
+
+void startCommsTask() {
+  if (commsTaskHandle == NULL) {
+    xTaskCreatePinnedToCore(
+      commsTask,
+      "CommsTask",
+      8192,           // 8 KB stack
+      NULL,
+      2,              // Priority 2 (lower than Core 1 real-time flight loop at 15)
+      &commsTaskHandle,
+      0               // Pinned to Core 0 (PRO_CPU, same core as Bluetooth controller)
+    );
   }
 }
 
@@ -538,6 +596,17 @@ void processCommand(const char* cmd_raw) {
       }
     }
 
+  } else if (str.startsWith("imu rot ") || str.startsWith("imu_rot ")) {
+    int rot = str.substring(str.lastIndexOf(' ') + 1).toInt();
+    setParameter("SENS_BOARD_ROT", (float)rot, true);
+    dualPrintln("--> IMU Board Orientation set to: " + String(rot) + " (0=Default..5=Pitch180) (Saved to Flash)");
+
+  } else if (str.startsWith("flow rot ") || str.startsWith("flow_rot ")) {
+    float rot = str.substring(str.lastIndexOf(' ') + 1).toFloat();
+    droneState.flow_rot_deg = rot;
+    setParameter("SENS_FLOW_ROT", rot, true);
+    dualPrintln("--> Optical Flow Mounting Rotation set to: " + String(rot, 1) + " deg (Saved to Flash)");
+
   } else if (str.equalsIgnoreCase("flow toggle")) {
     setFlowEnabled(!droneState.flow_enabled);
     setParameter("SYS_USE_FLOW", droneState.flow_enabled ? 1.0f : 0.0f, true);
@@ -567,6 +636,7 @@ void processCommand(const char* cmd_raw) {
       uint32_t errs  = flowSensor ? flowSensor->getChecksumErrors() : 0;
 
       dualPrintln("  • Subsystem    : ENABLED @ " + String(FLOW_BAUD) + " baud (MSPv2)");
+      dualPrintln("  • Mounting Rot : " + String(droneState.flow_rot_deg, 1) + " deg (0=Fwd, 90=Right, 180=Rear, 270=Left)");
       dualPrintln("  • Link Status  : " + String(connected ? "ONLINE (Receiving MSPv2 Telemetry)" : "NO DATA (Check Pin 16 / 5V)"));
       dualPrintln("  • Surface Qual : " + String(q) + " / 255 (" + String(droneState.flow_valid ? "VALID TRACKING" : "POOR/UNRELIABLE") + ")");
       dualPrintln("  • Raw Motion   : dX=" + String(mx) + " counts, dY=" + String(my) + " counts");

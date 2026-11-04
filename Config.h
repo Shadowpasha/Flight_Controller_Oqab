@@ -77,6 +77,7 @@ enum AltSource {
 #define FLOW_QUALITY_THRESH 35     // Minimum tracking quality threshold (0-255)
 #define FLOW_MIN_HEIGHT_M   0.05f  // Minimum ground distance (5cm) for flow calculation
 #define FLOW_MAX_HEIGHT_M   3.00f  // Maximum reliable range (3.0m)
+#define FLOW_DEFAULT_ROT_DEG 0.0f  // Mounting yaw rotation in degrees: 0=Forward, 90=Right, 180=Rear, 270=Left
 
 // Bluetooth Device Name
 #define BT_DEVICE_NAME "F330_Flight_Controller"

@@ -7,18 +7,25 @@ void dualPrint(const String& msg);
 
 DroneState droneState;
 
-// --- Complementary Filter Constants ---
-static const float ALPHA_ATT = 0.991f;
-static const float ALPHA_YAW = 0.995f;
+// --- Dynamic Estimator Configuration & Noise Parameters ---
+EstimatorConfig estConfig = {
+  0.991f,   // alpha_att (attitude complementary filter gain)
+  0.995f,   // alpha_yaw (yaw complementary filter gain)
+  0.0002f,  // q_z (vertical position process noise)
+  0.0035f,  // q_vz (vertical velocity process noise)
+  0.00003f, // q_ba (vertical accel bias process noise)
+  0.0025f,  // r_lidar (ToF LiDAR measurement covariance)
+  0.001f,   // q_horiz_pos
+  0.008f,   // q_horiz_vel
+  0.0001f,  // q_horiz_ba
+  0.02f,    // r_flow (optical flow base velocity measurement noise)
+  35.0f     // flow_q_thresh (minimum surface tracking quality threshold)
+};
 
-// --- Vertical Kalman Filter Covariance & Noise ---
+// --- Vertical Kalman Filter Covariance ---
 static float P_00 = 0.05f, P_01 = 0.0f, P_02 = 0.0f;
 static float P_10 = 0.0f,  P_11 = 0.05f, P_12 = 0.0f;
 static float P_20 = 0.0f,  P_21 = 0.0f, P_22 = 0.02f;
-
-static const float Q_z  = 0.0002f;
-static const float Q_vz = 0.0035f;
-static const float Q_ba = 0.00003f;
 
 static const float BARO_OFFSET_ALPHA = 0.015f;
 
@@ -166,6 +173,7 @@ void initStateEstimator() {
   memset(&droneState, 0, sizeof(DroneState));
   droneState.gps_enabled         = USE_GPS;
   droneState.flow_enabled        = USE_OPTICAL_FLOW;
+  droneState.flow_rot_deg        = FLOW_DEFAULT_ROT_DEG;
 
   droneState.ground_height_cm    = 10.0f;
   droneState.current_height_cm   = 10.0f;
@@ -489,17 +497,17 @@ void updateAttitudeEstimator(float dt) {
   float rollAcc  = atan2(ay, sqrt(ax * ax + az * az)) * RAD_TO_DEG;
   float pitchAcc = atan2(ax, sqrt(ay * ay + az * az)) * RAD_TO_DEG;
 
-  droneState.roll_deg  = ALPHA_ATT * (droneState.roll_deg  + droneState.gx_dps * dt) +
-                         (1.0f - ALPHA_ATT) * (rollAcc  - droneState.cal_roll_offset);
-  droneState.pitch_deg = ALPHA_ATT * (droneState.pitch_deg + droneState.gy_dps * dt) +
-                         (1.0f - ALPHA_ATT) * (pitchAcc - droneState.cal_pitch_offset);
+  droneState.roll_deg  = estConfig.alpha_att * (droneState.roll_deg  + droneState.gx_dps * dt) +
+                         (1.0f - estConfig.alpha_att) * (rollAcc  - droneState.cal_roll_offset);
+  droneState.pitch_deg = estConfig.alpha_att * (droneState.pitch_deg + droneState.gy_dps * dt) +
+                         (1.0f - estConfig.alpha_att) * (pitchAcc - droneState.cal_pitch_offset);
 
   // Yaw Integration with True North Compass Fusion
   if (droneState.has_compass) {
     float yaw_diff = droneState.mag_heading_deg - droneState.yaw_deg;
     while (yaw_diff > 180.0f)  yaw_diff -= 360.0f;
     while (yaw_diff < -180.0f) yaw_diff += 360.0f;
-    droneState.yaw_deg += (droneState.gz_dps * dt) + (1.0f - ALPHA_YAW) * yaw_diff;
+    droneState.yaw_deg += (droneState.gz_dps * dt) + (1.0f - estConfig.alpha_yaw) * yaw_diff;
   } else {
     droneState.yaw_deg += droneState.gz_dps * dt;
   }
@@ -536,17 +544,17 @@ static void kfPredict(float a_z_world, float dt) {
   float M21 = P_21;
   float M22 = P_22;
 
-  P_00 = M00 + M01 * f01 + M02 * f02 + Q_z;
+  P_00 = M00 + M01 * f01 + M02 * f02 + estConfig.q_z;
   P_01 = M01 + M02 * f12;
   P_02 = M02;
 
   P_10 = P_01;
-  P_11 = M11 + M12 * f12 + Q_vz;
+  P_11 = M11 + M12 * f12 + estConfig.q_vz;
   P_12 = M12;
 
   P_20 = P_02;
   P_21 = P_12;
-  P_22 = M22 + Q_ba;
+  P_22 = M22 + estConfig.q_ba;
 }
 
 static void kfUpdate(float z_meas, float R) {
@@ -628,7 +636,7 @@ void updateAltitudeEstimator(float dt, bool is_airborne, bool sim_mode) {
   // 3. Vertical Kalman Filter Measurement Update
   // Pure ToF LiDAR altitude mode: high precision (R=0.0025 m^2), 0-200 cm, immune to prop wash.
   if (droneState.rf_valid) {
-    kfUpdate(droneState.z_rf_corrected_m, 0.0025f);
+    kfUpdate(droneState.z_rf_corrected_m, estConfig.r_lidar);
     droneState.active_alt_source = ALT_SOURCE_LIDAR;
   }
 
@@ -826,7 +834,7 @@ void updateOpticalFlowEstimator(float dt, bool is_airborne) {
   }
 
   // Discard measurements with poor tracking confidence
-  if (q < FLOW_QUALITY_THRESH) {
+  if (q < (uint8_t)estConfig.flow_q_thresh) {
     droneState.flow_valid = false;
     return;
   }
@@ -855,9 +863,17 @@ void updateOpticalFlowEstimator(float dt, bool is_airborne) {
     return;
   }
 
-  // 2. Optical flow angular rates (rad/s)
-  float omega_flow_x = ((float)raw_x / dt) * FLOW_RAD_PER_COUNT;
-  float omega_flow_y = ((float)raw_y / dt) * FLOW_RAD_PER_COUNT;
+  // 1. Transform raw sensor counts into Drone Body Frame (Forward / Right) based on mounting yaw rotation
+  // If mounted at rotation theta (deg) clockwise: apply inverse rotation R(-theta) to project into body frame
+  float rot_rad = droneState.flow_rot_deg * DEG_TO_RAD;
+  float cos_r   = cos(rot_rad);
+  float sin_r   = sin(rot_rad);
+  float count_body_fwd   =  (float)raw_x * cos_r - (float)raw_y * sin_r;
+  float count_body_right =  (float)raw_x * sin_r + (float)raw_y * cos_r;
+
+  // 2. Optical flow angular rates (rad/s) in Body Frame
+  float omega_flow_x = (count_body_fwd   / dt) * FLOW_RAD_PER_COUNT;
+  float omega_flow_y = (count_body_right / dt) * FLOW_RAD_PER_COUNT;
 
   // 3. Gyro derotation: subtract body angular rates (rad/s)
   // Pitch down (gy > 0) creates apparent backward motion along X
@@ -890,7 +906,7 @@ void updateOpticalFlowEstimator(float dt, bool is_airborne) {
 
   // 5. Measurement update on Horizontal 3-State Kalman Filter
   // Variance scales inversely with surface tracking quality
-  float r_flow = constrain(0.04f / ((float)q / 255.0f), 0.015f, 0.40f);
+  float r_flow = constrain((estConfig.r_flow * 2.0f) / ((float)q / 255.0f), 0.015f, 0.40f);
 
   if (is_airborne) {
     kfNorth.updateVel(v_north, r_flow);

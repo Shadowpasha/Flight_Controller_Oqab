@@ -36,17 +36,58 @@ bool MPU6050_IMU::read(float &ax, float &ay, float &az, float &gx_rads, float &g
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
-  // Drone coordinate frame mapping:
-  // Forward (X_body) = +Y_mpu
-  // Right   (Y_body) = +X_mpu
-  // Up      (Z_body) = +Z_mpu
-  ax = a.acceleration.y;
-  ay = a.acceleration.x;
-  az = a.acceleration.z;
+  float raw_ax = a.acceleration.x;
+  float raw_ay = a.acceleration.y;
+  float raw_az = a.acceleration.z;
+  float raw_gx = g.gyro.x;
+  float raw_gy = g.gyro.y;
+  float raw_gz = g.gyro.z;
 
-  gx_rads = g.gyro.y;
-  gy_rads = g.gyro.x;
-  gz_rads = g.gyro.z;
+  switch (orientation) {
+    case 1:
+      // ROTATION_NONE (Standard FRD/NED: Fwd=+X, Right=+Y, Up=+Z)
+      ax = raw_ax;  ay = raw_ay;  az = raw_az;
+      gx_rads = raw_gx;  gy_rads = raw_gy;  gz_rads = raw_gz;
+      break;
+
+    case 2:
+      // ROTATION_YAW_90 CW (Fwd=-Y, Right=+X, Up=+Z)
+      ax = -raw_ay; ay = raw_ax;  az = raw_az;
+      gx_rads = -raw_gy; gy_rads = raw_gx;  gz_rads = raw_gz;
+      break;
+
+    case 3:
+      // ROTATION_YAW_180 CW (Fwd=-X, Right=-Y, Up=+Z)
+      ax = -raw_ax; ay = -raw_ay; az = raw_az;
+      gx_rads = -raw_gx; gy_rads = -raw_gy; gz_rads = raw_gz;
+      break;
+
+    case 4:
+      // ROTATION_YAW_270 CW (Fwd=+Y, Right=-X, Up=+Z)
+      ax = raw_ay;  ay = -raw_ax; az = raw_az;
+      gx_rads = raw_gy;  gy_rads = -raw_gx; gz_rads = raw_gz;
+      break;
+
+    case 5:
+      // ROTATION_PITCH_180 (Upside down: Fwd=+X, Right=-Y, Up=-Z)
+      ax = raw_ax;  ay = -raw_ay; az = -raw_az;
+      gx_rads = raw_gx;  gy_rads = -raw_gy; gz_rads = -raw_gz;
+      break;
+
+    case 0:
+    default:
+      // ROTATION_DEFAULT (Current physical hardware baseline - 100% backward compatible):
+      // Forward (X_body) = +Y_mpu
+      // Right   (Y_body) = +X_mpu
+      // Up      (Z_body) = +Z_mpu
+      ax = raw_ay;
+      ay = raw_ax;
+      az = raw_az;
+      gx_rads = raw_gy;
+      gy_rads = raw_gx;
+      gz_rads = raw_gz;
+      break;
+  }
 
   return true;
 }

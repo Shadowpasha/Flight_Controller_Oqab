@@ -65,6 +65,7 @@ struct DroneState {
   float   flow_lidar_dist_m;    // Matek onboard LiDAR height (m)
   uint8_t flow_lidar_quality;
   uint32_t flow_packets_seen;
+  float   flow_rot_deg;         // Optical flow sensor mounting yaw rotation relative to body (degrees)
 
   // --- Home Reference & Dead Reckoning Origin ---
   enum HomeOriginType { HOME_BOOT = 0, HOME_ARM = 1 };
@@ -127,6 +128,22 @@ struct DroneState {
 };
 
 extern DroneState droneState;
+
+struct EstimatorConfig {
+  float alpha_att;
+  float alpha_yaw;
+  float q_z;
+  float q_vz;
+  float q_ba;
+  float r_lidar;
+  float q_horiz_pos;
+  float q_horiz_vel;
+  float q_horiz_ba;
+  float r_flow;
+  float flow_q_thresh;
+};
+
+extern EstimatorConfig estConfig;
 
 // =============================================================================
 //  ESTIMATOR FUNCTIONS

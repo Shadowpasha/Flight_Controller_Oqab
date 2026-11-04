@@ -8,6 +8,7 @@
 extern BluetoothSerial SerialBT;
 
 void initComms();
+void startCommsTask();
 void dualPrint(const String& msg);
 void dualPrintln(const String& msg);
 void handleInputCommands();

@@ -22,6 +22,7 @@ public:
   // Reads accelerometer (m/s^2) and raw gyroscope (rad/s) in Drone Body Frame:
   // Forward = +X, Right = +Y, Up = +Z
   virtual bool read(float &ax, float &ay, float &az, float &gx_rads, float &gy_rads, float &gz_rads) = 0;
+  virtual void setOrientation(int rot) {}
 };
 
 // --- 2. Rangefinder Interface (Sharp IR, ToF, LiDAR, Ultrasonic) ---
@@ -108,8 +109,10 @@ public:
 class MPU6050_IMU : public IMUInterface {
 public:
   Adafruit_MPU6050 mpu;
+  int orientation = 0; // 0=Default, 1=None/Fwd0, 2=Yaw90, 3=Yaw180, 4=Yaw270, 5=Pitch180
   bool begin() override;
   bool read(float &ax, float &ay, float &az, float &gx_rads, float &gy_rads, float &gz_rads) override;
+  void setOrientation(int rot) override { orientation = rot; }
 };
 
 // --- Concrete Rangefinder: Sharp GP2Y0A IR ---

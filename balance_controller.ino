@@ -74,6 +74,9 @@ void disarm(const char* reason) {
 //  SETUP
 // =============================================================================
 void setup() {
+  // 0. Prioritize the real-time flight loop task on Core 1
+  vTaskPrioritySet(NULL, 15);
+
   // 1. Arm ESCs IMMEDIATELY at power-on with 1000us idle pulse so they never beep in alarm
   initMotors();
 
@@ -101,6 +104,9 @@ void setup() {
   flightMgr.auto_landing_enabled    = true;
   flightMgr.hover_duration_ms       = 6000; // 6s auto-hover
   flightMgr.last_command_millis     = millis();
+  flightMgr.max_tilt_angle_deg      = MAX_TILT_ANGLE_DEG; // 40.0 deg
+  flightMgr.timeout_safety_s        = TIMEOUT_SAFETY_MS / 1000; // 30 s
+  flightMgr.max_safe_ceiling_cm     = MAX_SAFE_CEILING_CM; // 185.0 cm
 
   // Initialize State Estimator & Controllers
   initStateEstimator();
@@ -151,30 +157,29 @@ void setup() {
   dualPrintln("Key Commands      : 'arm', 'disarm', 'land', 'param show', 'param set <NAME> <VAL>', 'status'");
   dualPrintln("-------------------------------------------------------------------\n");
 
+  // Start FreeRTOS Comms, Telemetry & Sensor Parsing Task pinned to Core 0
+  startCommsTask();
+
   last_loop_micros     = micros();
   last_alt_millis      = millis();
   last_gps_loop_millis = millis();
 }
 
 // =============================================================================
-//  MAIN DETERMINISTIC LOOP (250 Hz IMU, 50 Hz Altitude, 10 Hz GPS)
+//  MAIN DETERMINISTIC LOOP (250 Hz IMU, 50 Hz Altitude, 10 Hz GPS) - Core 1
 // =============================================================================
 void loop() {
-  // Feed Flow & GPS streams non-blockingly
-  if (droneState.flow_enabled && flowSensor) flowSensor->update();
-  if (droneState.gps_enabled && gpsSensor) gpsSensor->update();
-
-  // Process incoming commands from Serial and Bluetooth
-  handleInputCommands();
-
-  // Safety Watchdog: Disarm if no keepalive or command received for 30s while armed
-  if (flightMgr.is_armed && (millis() - flightMgr.last_command_millis > TIMEOUT_SAFETY_MS)) {
-    disarm("Safety watchdog: no command received for 30s");
+  // Safety Watchdog: Disarm if no keepalive or command received within configurable timeout
+  if (flightMgr.is_armed && (millis() - flightMgr.last_command_millis > ((unsigned long)flightMgr.timeout_safety_s * 1000))) {
+    disarm("Safety watchdog: link timeout while armed");
   }
 
   // Deterministic 250 Hz timing (4000 us)
   unsigned long current_micros = micros();
-  if (current_micros - last_loop_micros < LOOP_PERIOD_US) return;
+  if (current_micros - last_loop_micros < LOOP_PERIOD_US) {
+    taskYIELD();
+    return;
+  }
 
   float dt = (current_micros - last_loop_micros) / 1000000.0f;
   last_loop_micros = current_micros;
@@ -277,13 +282,13 @@ void loop() {
   }
 
   // --- 5. Tilt & Ceiling Flyaway Protection ---
-  if (flightMgr.is_armed && (fabs(droneState.roll_deg) > MAX_TILT_ANGLE_DEG || fabs(droneState.pitch_deg) > MAX_TILT_ANGLE_DEG)) {
-    disarm("CRASH PROTECTION: Tilt > 40 deg detected!");
+  if (flightMgr.is_armed && (fabs(droneState.roll_deg) > flightMgr.max_tilt_angle_deg || fabs(droneState.pitch_deg) > flightMgr.max_tilt_angle_deg)) {
+    disarm("CRASH PROTECTION: Excessive tilt angle detected!");
   }
 
-  // Mateksys ToF LiDAR Ceiling Guard: Prevents drone from flying beyond the 185cm ceiling
+  // Mateksys ToF LiDAR Ceiling Guard: Prevents drone from flying beyond safe ceiling
   static unsigned long ceiling_violation_start_ms = 0;
-  bool near_ceiling = (droneState.current_height_cm > MAX_SAFE_CEILING_CM || droneState.raw_height_cm >= 180.0f);
+  bool near_ceiling = (droneState.current_height_cm > flightMgr.max_safe_ceiling_cm || droneState.raw_height_cm >= (flightMgr.max_safe_ceiling_cm - 5.0f));
   if (flightMgr.is_armed && droneState.is_airborne && near_ceiling) {
     if (ceiling_violation_start_ms == 0) ceiling_violation_start_ms = millis();
     if (millis() - ceiling_violation_start_ms >= 200) {
@@ -504,20 +509,15 @@ void loop() {
       applyMotorMixing(flightMgr.base_throttle_us, out_roll, out_pitch, out_yaw, flightMgr.sim_mode);
     }
 
+    flightMgr.telemetry_out_roll  = out_roll;
+    flightMgr.telemetry_out_pitch = out_pitch;
+    flightMgr.telemetry_out_yaw   = out_yaw;
+
   } else {
     stopMotors();
     getActiveController()->reset();
-  }
-
-  // --- 8. Telemetry Transmission: Completely disabled when armed (zero communication delay) ---
-  if (!flightMgr.is_armed || flightMgr.sim_mode) {
-    static uint8_t telemetry_counter = 0;
-    uint8_t telemetry_interval = flightMgr.sim_mode ? 25 : 62;
-    if (++telemetry_counter >= telemetry_interval) {
-      telemetry_counter = 0;
-      sendTelemetry(flightMgr.is_armed, flightMgr.sim_mode, flightMgr.flight_stage,
-                    flightMgr.current_mode, flightMgr.base_throttle_us,
-                    out_roll, out_pitch, out_yaw);
-    }
+    flightMgr.telemetry_out_roll  = 0.0f;
+    flightMgr.telemetry_out_pitch = 0.0f;
+    flightMgr.telemetry_out_yaw   = 0.0f;
   }
 }

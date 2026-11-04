@@ -32,6 +32,16 @@ struct FlightManager {
   float manual_target_rate_roll_dps;
   float manual_target_rate_pitch_dps;
   float manual_target_rate_yaw_dps;
+
+  // Output telemetry cache (updated by Core 1 control loop, read by Core 0 comms loop)
+  float telemetry_out_roll;
+  float telemetry_out_pitch;
+  float telemetry_out_yaw;
+
+  // Configurable safety thresholds
+  float max_tilt_angle_deg;
+  int   timeout_safety_s;
+  float max_safe_ceiling_cm;
 };
 
 extern FlightManager flightMgr;

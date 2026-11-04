@@ -4,6 +4,7 @@
 #include "Controllers.h"
 #include "StateEstimator.h"
 #include "Config.h"
+#include "Sensors.h"
 
 void dualPrint(const String& msg);
 void dualPrintln(const String& msg);
@@ -15,6 +16,7 @@ static bool prefs_open = false;
 static int   s_hover_time_s    = 6;
 static int   s_controller_type = DEFAULT_CONTROLLER;
 static int   s_flight_mode     = MODE_CASCADE;
+static int   s_board_rot       = 0;
 
 // =============================================================================
 //  PARAMETER TABLE DEFINITION (PX4 Nomenclature)
@@ -58,9 +60,42 @@ static Parameter paramTable[] = {
   // --- 4. System & Sensor Configuration (SYS_...) ---
   { "SYS_USE_GPS",     PARAM_TYPE_BOOL,  &droneState.gps_enabled,             (float)(USE_GPS ? 1.0f : 0.0f), 0.0f, 1.0f, "Enable GPS Subsystem (0/1)" },
   { "SYS_USE_FLOW",    PARAM_TYPE_BOOL,  &droneState.flow_enabled,            (float)(USE_OPTICAL_FLOW ? 1.0f : 0.0f), 0.0f, 1.0f, "Enable Matek Optical Flow (0/1)" },
+  { "SENS_FLOW_ROT",   PARAM_TYPE_FLOAT, &droneState.flow_rot_deg,            FLOW_DEFAULT_ROT_DEG,                    0.0f, 360.0f, "Flow Sensor Mounting Yaw [deg]" },
   { "SYS_CTRL_TYPE",   PARAM_TYPE_INT,   &s_controller_type,                  (float)DEFAULT_CONTROLLER, 0.0f, 8.0f, "Active Controller (0=PID..3=MDBCI..8=VIABC)" },
   { "SYS_FLIGHT_MOD",  PARAM_TYPE_INT,   &s_flight_mode,                      0.0f,    0.0f,    2.0f,   "Flight Mode (0=CASCADE, 1=ANGLE, 2=RATE)" },
   { "MAG_DECL_DEG",    PARAM_TYPE_FLOAT, &droneState.mag_declination_deg,     0.0f,    -180.0f, 180.0f, "Magnetic Declination [deg]" },
+  { "SENS_BOARD_ROT",  PARAM_TYPE_INT,   &s_board_rot,                        0.0f,    0.0f,    5.0f,   "IMU Board Orientation (0=Default..5=Pitch180)" },
+  { "SAFE_MAX_TILT",   PARAM_TYPE_FLOAT, &flightMgr.max_tilt_angle_deg,       40.0f,   15.0f,   60.0f,  "Crash Protection Max Tilt [deg]" },
+  { "SAFE_TIMEOUT_S",  PARAM_TYPE_INT,   &flightMgr.timeout_safety_s,         30.0f,   5.0f,    120.0f, "Safety Watchdog Disarm Timeout [s]" },
+  { "SAFE_CEIL_CM",    PARAM_TYPE_FLOAT, &flightMgr.max_safe_ceiling_cm,      185.0f,  50.0f,   200.0f, "ToF LiDAR Ceiling Protection [cm]" },
+
+  // --- 5. State Estimator & Filter Tuning (EST_... / EKF_...) ---
+  { "EKF_Q_Z",         PARAM_TYPE_FLOAT, &estConfig.q_z,                      0.0002f, 0.00001f,0.01f,  "Vertical KF Pos Process Noise" },
+  { "EKF_Q_VZ",        PARAM_TYPE_FLOAT, &estConfig.q_vz,                     0.0035f, 0.0001f, 0.05f,  "Vertical KF Vel Process Noise" },
+  { "EKF_Q_BA",        PARAM_TYPE_FLOAT, &estConfig.q_ba,                     0.00003f,0.000001f,0.001f,"Vertical KF Accel Bias Noise" },
+  { "EKF_R_LIDAR",     PARAM_TYPE_FLOAT, &estConfig.r_lidar,                  0.0025f, 0.0001f, 0.05f,  "ToF LiDAR Measurement Noise R" },
+  { "ATT_ALPHA",       PARAM_TYPE_FLOAT, &estConfig.alpha_att,                0.991f,  0.90f,   0.999f, "Attitude Filter Alpha Gain" },
+  { "YAW_ALPHA",       PARAM_TYPE_FLOAT, &estConfig.alpha_yaw,                0.995f,  0.90f,   0.999f, "Yaw Filter Alpha Gain" },
+  { "EKF_R_FLOW",      PARAM_TYPE_FLOAT, &estConfig.r_flow,                   0.02f,   0.001f,  0.20f,  "Flow Vel Measurement Noise R" },
+  { "FLOW_Q_THRESH",   PARAM_TYPE_FLOAT, &estConfig.flow_q_thresh,            35.0f,   10.0f,   150.0f, "Flow Min Quality Threshold" },
+
+  // --- 6. Sliding Mode Controller Gains (SMC_...) ---
+  { "SMC_KP_ROLL",     PARAM_TYPE_FLOAT, &smcController.Kp_smc_roll,          1.2f,    0.1f,    10.0f,  "SMC Roll Proportional Gain" },
+  { "SMC_KSW_ROLL",    PARAM_TYPE_FLOAT, &smcController.Ksw_smc_roll,         0.8f,    0.05f,   5.0f,   "SMC Roll Switching Gain" },
+  { "SMC_LAMBDA_R",    PARAM_TYPE_FLOAT, &smcController.lambda_smc_roll,      1.5f,    0.1f,    10.0f,  "SMC Roll Sliding Surface Lambda" },
+  { "SMC_PHI_ROLL",    PARAM_TYPE_FLOAT, &smcController.phi_smc_roll,         0.3f,    0.05f,   2.0f,   "SMC Roll Boundary Layer Phi" },
+  { "SMC_KP_PITCH",    PARAM_TYPE_FLOAT, &smcController.Kp_smc_pitch,         1.2f,    0.1f,    10.0f,  "SMC Pitch Proportional Gain" },
+  { "SMC_KSW_PITCH",   PARAM_TYPE_FLOAT, &smcController.Ksw_smc_pitch,        0.8f,    0.05f,   5.0f,   "SMC Pitch Switching Gain" },
+  { "SMC_LAMBDA_P",    PARAM_TYPE_FLOAT, &smcController.lambda_smc_pitch,     1.5f,    0.1f,    10.0f,  "SMC Pitch Sliding Surface Lambda" },
+  { "SMC_PHI_PITCH",   PARAM_TYPE_FLOAT, &smcController.phi_smc_pitch,        0.3f,    0.05f,   2.0f,   "SMC Pitch Boundary Layer Phi" },
+  { "SMC_KP_YAW",      PARAM_TYPE_FLOAT, &smcController.Kp_smc_yaw,           1.5f,    0.1f,    10.0f,  "SMC Yaw Proportional Gain" },
+
+  // --- 7. Backstepping Controller Gains (BS_...) ---
+  { "BS_C1_ROLL",      PARAM_TYPE_FLOAT, &mdbciController.roll_axis.c1,       1.8f,    0.2f,    10.0f,  "MDBCI Roll Virtual Bandwidth c1" },
+  { "BS_C2_ROLL",      PARAM_TYPE_FLOAT, &mdbciController.roll_axis.c2,       0.65f,   0.05f,   5.0f,   "MDBCI Roll Rate Damping c2" },
+  { "BS_C1_PITCH",     PARAM_TYPE_FLOAT, &mdbciController.pitch_axis.c1,      1.8f,    0.2f,    10.0f,  "MDBCI Pitch Virtual Bandwidth c1" },
+  { "BS_C2_PITCH",     PARAM_TYPE_FLOAT, &mdbciController.pitch_axis.c2,      0.65f,   0.05f,   5.0f,   "MDBCI Pitch Rate Damping c2" },
+  { "BS_LAMBDA_M",     PARAM_TYPE_FLOAT, &mdbciController.roll_axis.lambda_m, 1.5f,    0.1f,    5.0f,   "MDBCI Integral Ceiling lambda_m" },
 };
 
 static const int NUM_PARAMS = sizeof(paramTable) / sizeof(paramTable[0]);
@@ -94,6 +129,8 @@ static void applyParamHooks(int idx) {
     setGPSEnabled(droneState.gps_enabled);
   } else if (strcmp(name, "SYS_USE_FLOW") == 0) {
     setFlowEnabled(droneState.flow_enabled);
+  } else if (strcmp(name, "SENS_BOARD_ROT") == 0) {
+    if (imuSensor) imuSensor->setOrientation(s_board_rot);
   }
 }
 

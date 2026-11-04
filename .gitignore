@@ -1,0 +1,21 @@
+# Build artifacts
+*.exe
+*.o
+*.a
+*.elf
+*.bin
+*.hex
+
+# Dashboard build & deps
+dashboard/node_modules/
+dashboard/dist/
+dashboard/src-tauri/target/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

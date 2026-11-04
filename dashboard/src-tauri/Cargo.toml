@@ -1,0 +1,18 @@
+[package]
+name = "oqab-ground-station"
+version = "1.0.0"
+description = "Oqab Flight Controller Ground Control Station"
+authors = ["Oqab Flight Systems"]
+edition = "2021"
+
+[lib]
+name = "oqab_ground_station_lib"
+crate-type = ["staticlib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
