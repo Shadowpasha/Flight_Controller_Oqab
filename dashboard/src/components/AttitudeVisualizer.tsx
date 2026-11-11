@@ -44,6 +44,7 @@ export const AttitudeVisualizer: React.FC<AttitudeProps> = ({ roll, pitch, yaw }
     scene.add(grid);
 
     const droneGroup = new THREE.Group();
+    droneGroup.rotation.order = 'YXZ';
     scene.add(droneGroup);
     droneGroupRef.current = droneGroup;
 
@@ -163,9 +164,7 @@ export const AttitudeVisualizer: React.FC<AttitudeProps> = ({ roll, pitch, yaw }
   useEffect(() => {
     if (!droneGroupRef.current) return;
     const deg2rad = Math.PI / 180;
-    droneGroupRef.current.rotation.x = pitch * deg2rad;
-    droneGroupRef.current.rotation.z = -roll * deg2rad;
-    droneGroupRef.current.rotation.y = -yaw * deg2rad;
+    droneGroupRef.current.rotation.set(-pitch * deg2rad, yaw * deg2rad, -roll * deg2rad, 'YXZ');
   }, [roll, pitch, yaw]);
 
   return (

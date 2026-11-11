@@ -19,8 +19,8 @@
 
 #include <Arduino.h>
 
-#define FLOW_RX_PIN 6
-#define FLOW_TX_PIN 5
+#define FLOW_RX_PIN 16
+#define FLOW_TX_PIN 17
 #define FLOW_BAUD   115200
 
 #define MSP2_SENSOR_RANGEFINDER 0x1F01

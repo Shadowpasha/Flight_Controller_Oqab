@@ -57,11 +57,11 @@ export const TelemetryCards: React.FC<Props> = ({ telemetry }) => {
         </div>
         <div className="my-1 font-mono text-xs font-semibold flex items-center justify-between text-neutral-200">
           <div>
-            <span className="text-neutral-400">N: </span>
+            <span className="text-neutral-400">X: </span>
             <span>{telemetry.posNorth >= 0 ? '+' : ''}{telemetry.posNorth.toFixed(2)}m</span>
           </div>
           <div>
-            <span className="text-neutral-400">E: </span>
+            <span className="text-neutral-400">Y: </span>
             <span>{telemetry.posEast >= 0 ? '+' : ''}{telemetry.posEast.toFixed(2)}m</span>
           </div>
         </div>
@@ -79,7 +79,9 @@ export const TelemetryCards: React.FC<Props> = ({ telemetry }) => {
         </div>
         <div className="my-1 flex items-center gap-2">
           <span className={`text-xs font-bold font-mono px-2 py-0.5 rounded border ${
-            isArmed
+            telemetry.stateTag === 'SIM'
+              ? 'bg-amber-600/30 text-amber-400 border-amber-500'
+              : isArmed
               ? 'bg-red-600 text-white border-red-600'
               : 'bg-neutral-900 text-neutral-400 border-neutral-800'
           }`}>

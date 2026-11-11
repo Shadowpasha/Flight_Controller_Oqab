@@ -1,5 +1,5 @@
 import React from 'react';
-import { Compass, Eye, Check } from 'lucide-react';
+import { Compass, Eye, Check, RefreshCw } from 'lucide-react';
 import { serialService } from '../services/serialService';
 
 interface OpticalFlowProps {
@@ -85,7 +85,7 @@ export const OpticalFlowPanel: React.FC<OpticalFlowProps> = ({
                 {flowSpeed.toFixed(2)} <span className="text-xs font-normal text-neutral-500">m/s</span>
               </span>
               <span className="text-[10px] font-mono text-neutral-600 mt-0.5">
-                Vn: {velNorth.toFixed(2)} | Ve: {velEast.toFixed(2)}
+                Vx: {velNorth.toFixed(2)} | Vy: {velEast.toFixed(2)}
               </span>
             </div>
           </div>
@@ -140,6 +140,27 @@ export const OpticalFlowPanel: React.FC<OpticalFlowProps> = ({
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Auto-Calibration Action */}
+      <div className="bg-neutral-950 p-3 rounded border border-neutral-800 flex flex-wrap items-center justify-between gap-3 font-mono text-xs">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-neutral-200 font-semibold">Optical Flow Derotation Auto-Calibration</span>
+          <span className="text-[11px] text-neutral-500">
+            Hold drone ~1m over floor & rock in pitch/roll to calibrate rad/count scale factor (saves to Flash).
+          </span>
+        </div>
+        <button
+          onClick={() => serialService.sendCommand('cal flow')}
+          disabled={isArmed}
+          className={`px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded text-xs font-bold transition flex items-center gap-1.5 ${
+            isArmed ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
+          }`}
+          title="Start 10s automatic optical flow derotation calibration"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+          <span>Calibrate Derotation</span>
+        </button>
       </div>
     </div>
   );

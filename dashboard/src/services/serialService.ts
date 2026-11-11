@@ -1,8 +1,9 @@
-import { DroneTelemetry, ConnectionState } from '../types';
+import { DroneTelemetry, ConnectionState, FlowLivePoint } from '../types';
 
 type LineCallback = (line: string) => void;
 type TelemetryCallback = (data: DroneTelemetry) => void;
 type StatusCallback = (status: ConnectionState) => void;
+type FlowLiveCallback = (point: FlowLivePoint) => void;
 
 class SerialService {
   private port: any = null;
@@ -12,8 +13,7 @@ class SerialService {
   private lineListeners: LineCallback[] = [];
   private telemetryListeners: TelemetryCallback[] = [];
   private statusListeners: StatusCallback[] = [];
-  private simInterval: any = null;
-  private simTime: number = 0;
+  private flowLiveListeners: FlowLiveCallback[] = [];
 
   // Telemetry state cache
   private latestTelemetry: DroneTelemetry = {
@@ -44,6 +44,7 @@ class SerialService {
     flowRotDeg: 0.0,
     isArmed: false,
     isAirborne: false,
+    isSimMode: false,
     timestamp: Date.now(),
   };
 
@@ -76,16 +77,19 @@ class SerialService {
     };
   }
 
+  public onFlowLive(cb: FlowLiveCallback) {
+    this.flowLiveListeners.push(cb);
+    return () => {
+      this.flowLiveListeners = this.flowLiveListeners.filter((l) => l !== cb);
+    };
+  }
+
   private setStatus(s: ConnectionState) {
     this.status = s;
     this.statusListeners.forEach((cb) => cb(s));
   }
 
   public async connect(): Promise<boolean> {
-    if (this.status === 'simulated') {
-      this.stopSimulation();
-    }
-
     if (!('serial' in navigator)) {
       alert('Web Serial API is not supported in this browser. Please use Google Chrome, Microsoft Edge, or the native Tauri desktop app.');
       return false;
@@ -98,6 +102,14 @@ class SerialService {
 
       this.setStatus('connected');
       this.startReading();
+
+      // Query mounting rotation and flow parameters from Flash immediately on connection
+      setTimeout(() => {
+        if (this.status === 'connected') {
+          this.sendCommand('param get SENS_FLOW_ROT');
+        }
+      }, 400);
+
       return true;
     } catch (err: any) {
       console.error('Serial connection error:', err);
@@ -107,21 +119,29 @@ class SerialService {
   }
 
   public async disconnect(): Promise<void> {
-    if (this.simInterval) {
-      this.stopSimulation();
-    }
+    this.setStatus('disconnected');
 
     if (this.reader) {
       try {
         await this.reader.cancel();
+      } catch (e) {
+        console.warn('Reader cancel warning:', e);
+      }
+      try {
+        this.reader.releaseLock();
       } catch (e) {}
       this.reader = null;
     }
 
+    // Wait a brief tick for the reading loop to cleanly exit and release locks
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
     if (this.port) {
       try {
         await this.port.close();
-      } catch (e) {}
+      } catch (err) {
+        console.warn('Port close warning:', err);
+      }
       this.port = null;
     }
 
@@ -134,11 +154,6 @@ class SerialService {
 
     // Echo to listeners
     this.emitLine(`> ${cleanCmd}`);
-
-    if (this.status === 'simulated') {
-      this.handleSimulatedCommand(cleanCmd);
-      return;
-    }
 
     if (!this.port || !this.port.writable) {
       console.warn('Cannot send command: port not open');
@@ -156,11 +171,10 @@ class SerialService {
   }
 
   private async startReading() {
+    const textDecoder = new TextDecoder();
     while (this.port && this.port.readable && this.status === 'connected') {
       try {
-        const textDecoder = new (window as any).TextDecoderStream();
-        const readableStreamClosed = this.port.readable.pipeTo(textDecoder.writable);
-        const reader = textDecoder.readable.getReader();
+        const reader = this.port.readable.getReader();
         this.reader = reader;
 
         let buffer = '';
@@ -168,7 +182,7 @@ class SerialService {
           const { value, done } = await reader.read();
           if (done) break;
           if (value) {
-            buffer += value;
+            buffer += textDecoder.decode(value, { stream: true });
             const lines = buffer.split(/\r?\n/);
             buffer = lines.pop() || '';
             for (const line of lines) {
@@ -180,9 +194,18 @@ class SerialService {
             }
           }
         }
-      } catch (err) {
-        console.warn('Serial read loop error or closed:', err);
+      } catch (err: any) {
+        if (this.status === 'connected') {
+          console.warn('Serial read loop interrupted:', err);
+        }
         break;
+      } finally {
+        if (this.reader) {
+          try {
+            this.reader.releaseLock();
+          } catch (e) {}
+          this.reader = null;
+        }
       }
     }
     this.setStatus('disconnected');
@@ -193,11 +216,92 @@ class SerialService {
   }
 
   private parseTelemetryLine(line: string) {
+    if (line.includes('--> SIM MODE ON')) {
+      this.latestTelemetry.isSimMode = true;
+      this.latestTelemetry.isArmed = true;
+      this.latestTelemetry.stateTag = 'SIM';
+      this.emitTelemetry();
+      return;
+    }
+    if (line.includes('--> SIM MODE OFF')) {
+      this.latestTelemetry.isSimMode = false;
+      this.latestTelemetry.isArmed = false;
+      this.latestTelemetry.stateTag = 'DISARM';
+      this.emitTelemetry();
+      return;
+    }
+
+    if (line.includes('[FLOW LIVE]')) {
+      try {
+        const qMatch = line.match(/Q:\s*(\d+)/);
+        const rotLiveMatch = line.match(/Rot:\s*([\d.-]+)/i);
+        const vfwdMatch = line.match(/V_fwd:\s*([+\-\d.]+)m\/s/);
+        const vrightMatch = line.match(/V_right:\s*([+\-\d.]+)m\/s/);
+        const ofMatch = line.match(/OF_x:\s*([+\-\d.]+)dps\s+OF_y:\s*([+\-\d.]+)dps/);
+        const gyroMatch = line.match(/Gyro:\(\s*([+\-\d.]+),\s*([+\-\d.]+),\s*([+\-\d.]+)\)dps/);
+        const hMatch = line.match(/H:\s*([\d.]+)m/);
+        const dxyMatch = line.match(/dX:\s*([+\-\d]+)\s+dY:\s*([+\-\d]+)/);
+
+        const quality = qMatch ? parseInt(qMatch[1], 10) : 0;
+        if (rotLiveMatch) {
+          this.latestTelemetry.flowRotDeg = parseFloat(rotLiveMatch[1]);
+        }
+        const vFwd = vfwdMatch ? parseFloat(vfwdMatch[1]) : 0;
+        const vRight = vrightMatch ? parseFloat(vrightMatch[1]) : 0;
+        const gyroX = gyroMatch ? parseFloat(gyroMatch[1]) : 0;
+        const gyroY = gyroMatch ? parseFloat(gyroMatch[2]) : 0;
+        const gyroZ = gyroMatch ? parseFloat(gyroMatch[3]) : 0;
+        const heightM = hMatch ? parseFloat(hMatch[1]) : 0.8;
+        const rawX = dxyMatch ? parseInt(dxyMatch[1], 10) : 0;
+        const rawY = dxyMatch ? parseInt(dxyMatch[2], 10) : 0;
+
+        let ofX = 0;
+        let ofY = 0;
+        if (ofMatch) {
+          ofX = parseFloat(ofMatch[1]);
+          ofY = parseFloat(ofMatch[2]);
+        } else {
+          // Fallback if older firmware string: estimate optical angular rates
+          const safeH = Math.max(0.1, heightM);
+          ofX = (vFwd / safeH) * (180.0 / Math.PI) + gyroY;
+          ofY = (vRight / safeH) * (180.0 / Math.PI) + gyroX;
+        }
+
+        const point: FlowLivePoint = {
+          time: Date.now(),
+          quality,
+          vFwd,
+          vRight,
+          ofX,
+          ofY,
+          gyroX,
+          gyroY,
+          gyroZ,
+          heightM,
+          rawX,
+          rawY,
+        };
+
+        this.flowLiveListeners.forEach((cb) => cb(point));
+
+        // Also keep telemetry fields up to date
+        this.latestTelemetry.flowQuality = quality;
+        this.latestTelemetry.flowSpeed = Math.sqrt(vFwd * vFwd + vRight * vRight);
+        this.latestTelemetry.velNorth = vFwd;
+        this.latestTelemetry.velEast = vRight;
+        this.latestTelemetry.lidarCm = heightM * 100.0;
+        this.emitTelemetry();
+      } catch (err) {
+        console.warn('Error parsing [FLOW LIVE] line:', err);
+      }
+      return;
+    }
+
     // Example:
     // [DEAD-RECKONING] Home:BOOT | Dist: 2D= 0.00m, 3D= 0.10m | Pos: dN= +0.00m, dE= +0.00m, dAlt= +0.10m( 10cm) | Vel: Vn= +0.00m/s, Ve= +0.00m/s, Vz= +0.00m/s (Spd:0.00) | Acc: GPS[FLOW(Q:185,Spd:0.02)] Raw:(+0.00,+0.00)m Alt:LID[LIDAR:10.2]cm | DISARM [MDBCI|CAS]
     if (!line.includes('[DEAD-RECKONING]')) {
-      // Check for mounting rotation or param responses
-      const rotMatch = line.match(/Optical Flow Mounting Rotation set to: ([\d.-]+)/);
+      // Check for mounting rotation responses from param get, param show, flow report, or flow rot
+      const rotMatch = line.match(/(?:SENS_FLOW_ROT\s*=\s*|Mounting Rot\s*:\s*|Rot:\s*|Optical Flow Mounting Rotation set to:\s*)([\d.-]+)/i);
       if (rotMatch) {
         this.latestTelemetry.flowRotDeg = parseFloat(rotMatch[1]);
         this.emitTelemetry();
@@ -215,7 +319,7 @@ class SerialService {
         this.latestTelemetry.dist3d = parseFloat(distMatch[2]);
       }
 
-      const posMatch = line.match(/Pos:\s*dN=\s*([+\-\d.]+)m,\s*dE=\s*([+\-\d.]+)m,\s*dAlt=\s*([+\-\d.]+)m\(\s*([\d.]+)cm\)/);
+      const posMatch = line.match(/Pos:\s*(?:dN|X)=\s*([+\-\d.]+)m,\s*(?:dE|Y)=\s*([+\-\d.]+)m,\s*(?:dAlt|Z)=\s*([+\-\d.]+)m\(\s*([\d.]+)cm\)/);
       if (posMatch) {
         this.latestTelemetry.posNorth = parseFloat(posMatch[1]);
         this.latestTelemetry.posEast = parseFloat(posMatch[2]);
@@ -223,12 +327,19 @@ class SerialService {
         this.latestTelemetry.heightCm = parseFloat(posMatch[4]);
       }
 
-      const velMatch = line.match(/Vel:\s*Vn=\s*([+\-\d.]+)m\/s,\s*Ve=\s*([+\-\d.]+)m\/s,\s*Vz=\s*([+\-\d.]+)m\/s\s*\(Spd:([\d.]+)\)/);
+      const velMatch = line.match(/Vel:\s*(?:Vn|Vx)=\s*([+\-\d.]+)m\/s,\s*(?:Ve|Vy)=\s*([+\-\d.]+)m\/s,\s*Vz=\s*([+\-\d.]+)m\/s\s*\(Spd:([\d.]+)\)/);
       if (velMatch) {
         this.latestTelemetry.velNorth = parseFloat(velMatch[1]);
         this.latestTelemetry.velEast = parseFloat(velMatch[2]);
         this.latestTelemetry.velDown = parseFloat(velMatch[3]);
         this.latestTelemetry.speed3d = parseFloat(velMatch[4]);
+      }
+
+      const attMatch = line.match(/(?:Att|Rot):\s*R=\s*([+\-\d.]+)[,\s]+P=\s*([+\-\d.]+)[,\s]+Y=\s*([+\-\d.]+)/i);
+      if (attMatch) {
+        this.latestTelemetry.rollDeg = parseFloat(attMatch[1]);
+        this.latestTelemetry.pitchDeg = parseFloat(attMatch[2]);
+        this.latestTelemetry.yawDeg = parseFloat(attMatch[3]);
       }
 
       const flowMatch = line.match(/FLOW\(Q:(\d+),Spd:([\d.]+)\)/);
@@ -246,11 +357,13 @@ class SerialService {
 
       const endMatch = line.match(/\|\s*([A-Za-z0-9:]+)\s*\[([A-Za-z0-9]+)\|([A-Za-z0-9]+)\]$/);
       if (endMatch) {
-        this.latestTelemetry.stateTag = endMatch[1];
+        const tag = endMatch[1];
+        this.latestTelemetry.stateTag = tag;
         this.latestTelemetry.controller = endMatch[2];
         this.latestTelemetry.mode = endMatch[3];
-        this.latestTelemetry.isArmed = endMatch[1].startsWith('ARM');
-        this.latestTelemetry.isAirborne = endMatch[1].includes(':CLB') || endMatch[1].includes(':HOV') || endMatch[1].includes(':LND');
+        this.latestTelemetry.isSimMode = tag === 'SIM';
+        this.latestTelemetry.isArmed = tag.startsWith('ARM') || tag === 'SIM';
+        this.latestTelemetry.isAirborne = tag.includes(':CLB') || tag.includes(':HOV') || tag.includes(':LND');
       }
 
       this.latestTelemetry.timestamp = Date.now();
@@ -263,93 +376,6 @@ class SerialService {
   private emitTelemetry() {
     const data = { ...this.latestTelemetry };
     this.telemetryListeners.forEach((cb) => cb(data));
-  }
-
-  // --- DEMO / SIMULATOR MODE ---
-  public startSimulation() {
-    this.disconnect();
-    this.setStatus('simulated');
-    this.emitLine('>>> [DEMO MODE ACTIVE] Emulating flight controller telemetry stream @ 20 Hz');
-    this.simTime = 0;
-
-    this.simInterval = setInterval(() => {
-      this.simTime += 0.05;
-      const t = this.simTime;
-
-      // Realistic drone attitude & altitude oscillation
-      const roll = Math.sin(t * 1.5) * 4.2;
-      const pitch = Math.cos(t * 1.2) * 3.5;
-      const yaw = ((t * 8) % 360) - 180;
-
-      const baseHeight = this.latestTelemetry.isArmed ? 45.0 + Math.sin(t * 2.0) * 2.5 : 9.5;
-      const vz = this.latestTelemetry.isArmed ? Math.cos(t * 2.0) * 0.08 : 0.0;
-      const vn = this.latestTelemetry.isArmed ? Math.sin(t * 0.8) * 0.25 : 0.0;
-      const ve = this.latestTelemetry.isArmed ? Math.cos(t * 0.8) * 0.2 : 0.0;
-      const quality = this.latestTelemetry.isArmed ? 190 + Math.floor(Math.sin(t) * 15) : 175;
-
-      this.latestTelemetry = {
-        ...this.latestTelemetry,
-        rollDeg: roll,
-        pitchDeg: pitch,
-        yawDeg: yaw,
-        heightCm: baseHeight,
-        lidarCm: baseHeight,
-        velNorth: vn,
-        velEast: ve,
-        velDown: vz,
-        speed3d: Math.sqrt(vn * vn + ve * ve + vz * vz),
-        posNorth: Math.sin(t * 0.3) * 0.4,
-        posEast: Math.cos(t * 0.3) * 0.3,
-        dist2d: 0.5,
-        dist3d: 0.6,
-        flowQuality: quality,
-        flowSpeed: Math.sqrt(vn * vn + ve * ve),
-        stateTag: this.latestTelemetry.isArmed ? 'ARM:HOV' : 'DISARM',
-        isAirborne: this.latestTelemetry.isArmed,
-        timestamp: Date.now(),
-      };
-
-      const line = `[DEAD-RECKONING] Home:BOOT | Dist: 2D=${this.latestTelemetry.dist2d.toFixed(2)}m, 3D=${this.latestTelemetry.dist3d.toFixed(2)}m | Pos: dN=${this.latestTelemetry.posNorth >= 0 ? '+' : ''}${this.latestTelemetry.posNorth.toFixed(2)}m, dE=${this.latestTelemetry.posEast >= 0 ? '+' : ''}${this.latestTelemetry.posEast.toFixed(2)}m, dAlt=+${(this.latestTelemetry.heightCm / 100).toFixed(2)}m(${Math.round(this.latestTelemetry.heightCm)}cm) | Vel: Vn=${vn >= 0 ? '+' : ''}${vn.toFixed(2)}m/s, Ve=${ve >= 0 ? '+' : ''}${ve.toFixed(2)}m/s, Vz=${vz >= 0 ? '+' : ''}${vz.toFixed(2)}m/s (Spd:${this.latestTelemetry.speed3d.toFixed(2)}) | Acc: GPS[FLOW(Q:${quality},Spd:${this.latestTelemetry.flowSpeed.toFixed(2)})] Raw:(+0.00,+0.00)m Alt:LID[LIDAR:${this.latestTelemetry.lidarCm.toFixed(1)}]cm | ${this.latestTelemetry.stateTag} [${this.latestTelemetry.controller}|CAS]`;
-
-      this.emitLine(line);
-      this.emitTelemetry();
-    }, 50);
-  }
-
-  public stopSimulation() {
-    if (this.simInterval) {
-      clearInterval(this.simInterval);
-      this.simInterval = null;
-    }
-    this.setStatus('disconnected');
-    this.emitLine('>>> [DEMO MODE STOPPED]');
-  }
-
-  private handleSimulatedCommand(cmd: string) {
-    if (cmd.startsWith('param set SENS_FLOW_ROT')) {
-      const val = parseFloat(cmd.split(' ')[3]);
-      this.latestTelemetry.flowRotDeg = val;
-      this.emitLine(`--> Optical Flow Mounting Rotation set to: ${val.toFixed(1)} deg (Saved to Flash)`);
-    } else if (cmd.startsWith('ctrl ') || cmd.startsWith('controller ')) {
-      const c = cmd.split(' ')[1].toUpperCase();
-      this.latestTelemetry.controller = c;
-      this.emitLine(`--> Controller switched to: ${c}`);
-    } else if (cmd === 'arm') {
-      this.latestTelemetry.isArmed = true;
-      this.emitLine('>>> ARMED! Motors spooled to 1050us. Liftoff sequence armed.');
-    } else if (cmd === 'disarm') {
-      this.latestTelemetry.isArmed = false;
-      this.emitLine('!!! DISARMED: User command');
-    } else if (cmd === 'status') {
-      this.emitLine('=================== F330 FLIGHT CONTROLLER STATUS ===================');
-      this.emitLine(`  • Controller   : ${this.latestTelemetry.controller}`);
-      this.emitLine(`  • Flow Rot     : ${this.latestTelemetry.flowRotDeg} deg`);
-      this.emitLine(`  • Flow Quality : ${this.latestTelemetry.flowQuality} / 255`);
-      this.emitLine(`  • ToF LiDAR    : ${this.latestTelemetry.lidarCm.toFixed(1)} cm`);
-      this.emitLine('=====================================================================');
-    } else {
-      this.emitLine(`OK: [Simulated Ack] ${cmd}`);
-    }
   }
 }
 

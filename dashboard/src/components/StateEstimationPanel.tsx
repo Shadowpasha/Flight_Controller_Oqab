@@ -152,8 +152,8 @@ export const StateEstimationPanel: React.FC<Props> = ({ telemetry, isArmed }) =>
         <div className="bg-[#0a0a0a] border border-neutral-800 rounded-lg p-3.5 flex flex-col justify-between">
           <span className="text-[11px] font-mono text-neutral-400 uppercase">Flow Earth Velocity</span>
           <div className="my-1 font-mono text-sm font-bold text-white flex justify-between">
-            <span>Vn: {telemetry.velNorth.toFixed(2)}m/s</span>
-            <span>Ve: {telemetry.velEast.toFixed(2)}m/s</span>
+            <span>Vx: {telemetry.velNorth.toFixed(2)}m/s</span>
+            <span>Vy: {telemetry.velEast.toFixed(2)}m/s</span>
           </div>
           <span className="text-[10px] font-mono text-neutral-400">
             Quality: {telemetry.flowQuality} / 255

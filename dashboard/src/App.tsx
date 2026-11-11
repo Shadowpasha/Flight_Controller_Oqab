@@ -1,16 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Plane,
   Cable,
   Flame,
   Sliders,
   Terminal as TerminalIcon,
   Eye,
   Activity,
-  Sparkles,
+  Radio,
   Layers,
   Cpu,
+  Compass,
 } from 'lucide-react';
+import oqabLogo from './assets/oqab-logo.png';
 import { serialService } from './services/serialService';
 import { DroneTelemetry, ConnectionState } from './types';
 import { AttitudeVisualizer } from './components/AttitudeVisualizer';
@@ -21,11 +22,13 @@ import { ConsoleTerminal } from './components/ConsoleTerminal';
 import { LiveTelemetryChart } from './components/LiveTelemetryChart';
 import { StateEstimationPanel } from './components/StateEstimationPanel';
 import { ControllerGainsPanel } from './components/ControllerGainsPanel';
+import { SensorsCalibrationPanel } from './components/SensorsCalibrationPanel';
+import { FlowDerotationChart } from './components/FlowDerotationChart';
 
 export const App: React.FC = () => {
   const [status, setStatus] = useState<ConnectionState>('disconnected');
   const [telemetry, setTelemetry] = useState<DroneTelemetry>(serialService.getLatestTelemetry());
-  const [activeTab, setActiveTab] = useState<'overview' | 'state_est' | 'ctrl_gains' | 'flow' | 'params' | 'terminal'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'sensors' | 'state_est' | 'ctrl_gains' | 'flow' | 'params' | 'terminal'>('overview');
 
   useEffect(() => {
     const unsubStatus = serialService.onStatus(setStatus);
@@ -36,20 +39,24 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    if (activeTab === 'flow' && status === 'connected') {
+      serialService.sendCommand('param get SENS_FLOW_ROT');
+    }
+  }, [activeTab, status]);
+
+  const isSimMode = telemetry.isSimMode || telemetry.stateTag === 'SIM';
+
   const handleConnectToggle = () => {
-    if (status === 'connected' || status === 'simulated') {
+    if (status === 'connected') {
       serialService.disconnect();
     } else {
       serialService.connect();
     }
   };
 
-  const handleDemoToggle = () => {
-    if (status === 'simulated') {
-      serialService.stopSimulation();
-    } else {
-      serialService.startSimulation();
-    }
+  const handleSimToggle = () => {
+    serialService.sendCommand('sim');
   };
 
   const handleArmToggle = () => {
@@ -73,8 +80,8 @@ export const App: React.FC = () => {
       {/* Top Navbar */}
       <header className="bg-[#0a0a0a] border-b border-neutral-800 px-6 py-3 flex items-center justify-between sticky top-0 z-50">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded bg-black border border-red-600 flex items-center justify-center">
-            <Plane className="w-4 h-4 text-red-600 transform -rotate-45" />
+          <div className="w-9 h-9 rounded-lg bg-neutral-950 border border-red-600/50 p-1 flex items-center justify-center shadow-[0_0_12px_rgba(220,38,38,0.25)]">
+            <img src={oqabLogo} alt="Oqab Logo" className="w-full h-full object-contain filter drop-shadow-[0_0_3px_rgba(220,38,38,0.4)]" />
           </div>
           <div>
             <div className="flex items-center gap-2">
@@ -82,7 +89,7 @@ export const App: React.FC = () => {
                 OQAB GROUND CONTROL
               </h1>
               <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-neutral-900 text-red-500 border border-neutral-800">
-                F330
+                AUTOPILOT
               </span>
             </div>
             <p className="text-[11px] font-mono text-neutral-400">ESP32 Dual-Core Avionics</p>
@@ -109,15 +116,17 @@ export const App: React.FC = () => {
         {/* Right Action Controls */}
         <div className="flex items-center gap-2.5 font-mono text-xs">
           <button
-            onClick={handleDemoToggle}
-            className={`px-3 py-1.5 rounded font-semibold flex items-center gap-1.5 transition border cursor-pointer ${
-              status === 'simulated'
-                ? 'bg-red-600/20 text-red-400 border-red-600'
+            onClick={handleSimToggle}
+            disabled={status !== 'connected'}
+            className={`px-3 py-1.5 rounded font-semibold flex items-center gap-1.5 transition border cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+              isSimMode
+                ? 'bg-amber-500/20 text-amber-400 border-amber-500 animate-pulse'
                 : 'bg-neutral-900 text-neutral-400 hover:text-white border-neutral-800'
             }`}
+            title={status !== 'connected' ? 'Connect serial link to send sim command' : 'Toggle hardware simulation mode (Motors stay at IDLE, loops active)'}
           >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>{status === 'simulated' ? 'SIM RUNNING' : 'DEMO MODE'}</span>
+            <Radio className="w-3.5 h-3.5 text-amber-500" />
+            <span>{isSimMode ? 'SIM ACTIVE' : 'SIM MODE'}</span>
           </button>
 
           <button
@@ -136,22 +145,23 @@ export const App: React.FC = () => {
                 ? 'DISCONNECT'
                 : status === 'connecting'
                 ? 'CONNECTING...'
-                : status === 'simulated'
-                ? 'STOP DEMO'
                 : 'CONNECT LINK'}
             </span>
           </button>
 
           <button
             onClick={handleArmToggle}
-            className={`px-4 py-1.5 rounded font-bold uppercase tracking-wider flex items-center gap-1.5 transition border cursor-pointer ${
-              telemetry.isArmed
+            disabled={status !== 'connected'}
+            className={`px-4 py-1.5 rounded font-bold uppercase tracking-wider flex items-center gap-1.5 transition border cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+              telemetry.isArmed && !isSimMode
                 ? 'bg-red-600 hover:bg-red-700 text-white border-red-600 animate-pulse'
+                : isSimMode
+                ? 'bg-amber-600/30 text-amber-400 border-amber-500'
                 : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border-neutral-800'
             }`}
           >
             <Flame className="w-3.5 h-3.5 text-red-500" />
-            <span>{telemetry.isArmed ? 'DISARM' : 'ARM'}</span>
+            <span>{telemetry.isArmed ? (isSimMode ? 'SIM RUNNING' : 'DISARM') : 'ARM'}</span>
           </button>
         </div>
       </header>
@@ -163,6 +173,7 @@ export const App: React.FC = () => {
           <div className="flex flex-wrap gap-1.5 font-mono text-xs">
             {[
               { id: 'overview', label: 'Overview', icon: Activity },
+              { id: 'sensors', label: 'Sensors & Cal', icon: Compass },
               { id: 'state_est', label: 'State Estimation', icon: Layers },
               { id: 'ctrl_gains', label: 'Controller Gains', icon: Cpu },
               { id: 'flow', label: 'Optical Flow', icon: Eye },
@@ -192,17 +203,19 @@ export const App: React.FC = () => {
             <div
               className={`w-2 h-2 rounded-full ${
                 status === 'connected'
-                  ? 'bg-red-600 animate-pulse'
-                  : status === 'simulated'
-                  ? 'bg-white'
+                  ? isSimMode
+                    ? 'bg-amber-400 animate-pulse'
+                    : 'bg-red-600 animate-pulse'
                   : 'bg-neutral-600'
               }`}
             />
             <span>
               {status === 'connected'
-                ? 'LINK ACTIVE'
-                : status === 'simulated'
-                ? 'EMULATION'
+                ? isSimMode
+                  ? 'SIMULATION'
+                  : 'LINK ACTIVE'
+                : status === 'connecting'
+                ? 'CONNECTING...'
                 : 'OFFLINE'}
             </span>
           </div>
@@ -222,18 +235,78 @@ export const App: React.FC = () => {
               />
             </div>
             <div className="lg:col-span-5 flex flex-col gap-4">
-              <OpticalFlowPanel
-                quality={telemetry.flowQuality}
-                flowSpeed={telemetry.flowSpeed}
-                flowRotDeg={telemetry.flowRotDeg}
-                lidarCm={telemetry.lidarCm}
-                velNorth={telemetry.velNorth}
-                velEast={telemetry.velEast}
-                isArmed={telemetry.isArmed}
-              />
+              <div className="bg-[#0a0a0a] border border-neutral-800 rounded-lg p-5 flex flex-col gap-4">
+                <div className="flex items-center justify-between border-b border-neutral-800/80 pb-3 font-mono">
+                  <div className="flex items-center gap-2">
+                    <Radio className="w-4 h-4 text-red-600" />
+                    <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-200">
+                      Flight Dynamics & Navigation
+                    </h2>
+                  </div>
+                  <span
+                    className={`text-[11px] px-2 py-0.5 rounded border ${
+                      telemetry.isArmed
+                        ? 'bg-red-950 text-red-400 border-red-800 font-bold'
+                        : 'bg-neutral-900 text-neutral-400 border-neutral-800'
+                    }`}
+                  >
+                    {telemetry.stateTag}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 font-mono">
+                  <div className="bg-black p-3 rounded border border-neutral-800 flex flex-col">
+                    <span className="text-[11px] text-neutral-400">Position North (X)</span>
+                    <span className="text-xl font-bold text-neutral-100 mt-1">
+                      {telemetry.posNorth > 0 ? '+' : ''}
+                      {telemetry.posNorth.toFixed(2)} <span className="text-xs text-neutral-500">m</span>
+                    </span>
+                    <span className="text-[10px] text-neutral-500 mt-0.5">
+                      Vel: {telemetry.velNorth > 0 ? '+' : ''}
+                      {telemetry.velNorth.toFixed(2)} m/s
+                    </span>
+                  </div>
+
+                  <div className="bg-black p-3 rounded border border-neutral-800 flex flex-col">
+                    <span className="text-[11px] text-neutral-400">Position East (Y)</span>
+                    <span className="text-xl font-bold text-neutral-100 mt-1">
+                      {telemetry.posEast > 0 ? '+' : ''}
+                      {telemetry.posEast.toFixed(2)} <span className="text-xs text-neutral-500">m</span>
+                    </span>
+                    <span className="text-[10px] text-neutral-500 mt-0.5">
+                      Vel: {telemetry.velEast > 0 ? '+' : ''}
+                      {telemetry.velEast.toFixed(2)} m/s
+                    </span>
+                  </div>
+
+                  <div className="bg-black p-3 rounded border border-neutral-800 flex flex-col">
+                    <span className="text-[11px] text-neutral-400">Altitude AGL</span>
+                    <span className="text-xl font-bold text-neutral-100 mt-1">
+                      {telemetry.heightCm.toFixed(1)} <span className="text-xs text-neutral-500">cm</span>
+                    </span>
+                    <span className="text-[10px] text-neutral-500 mt-0.5">
+                      Vz: {telemetry.velDown > 0 ? '+' : ''}
+                      {telemetry.velDown.toFixed(2)} m/s
+                    </span>
+                  </div>
+
+                  <div className="bg-black p-3 rounded border border-neutral-800 flex flex-col">
+                    <span className="text-[11px] text-neutral-400">Distance From Home</span>
+                    <span className="text-xl font-bold text-neutral-100 mt-1">
+                      {telemetry.dist2d.toFixed(2)} <span className="text-xs text-neutral-500">m</span>
+                    </span>
+                    <span className="text-[10px] text-neutral-500 mt-0.5">Origin: {telemetry.homeOrigin}</span>
+                  </div>
+                </div>
+              </div>
+
               <LiveTelemetryChart telemetry={telemetry} />
             </div>
           </div>
+        )}
+
+        {activeTab === 'sensors' && (
+          <SensorsCalibrationPanel telemetry={telemetry} isArmed={telemetry.isArmed} />
         )}
 
         {activeTab === 'state_est' && (
@@ -245,17 +318,20 @@ export const App: React.FC = () => {
         )}
 
         {activeTab === 'flow' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <OpticalFlowPanel
-              quality={telemetry.flowQuality}
-              flowSpeed={telemetry.flowSpeed}
-              flowRotDeg={telemetry.flowRotDeg}
-              lidarCm={telemetry.lidarCm}
-              velNorth={telemetry.velNorth}
-              velEast={telemetry.velEast}
-              isArmed={telemetry.isArmed}
-            />
-            <LiveTelemetryChart telemetry={telemetry} />
+          <div className="flex flex-col gap-4">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <OpticalFlowPanel
+                quality={telemetry.flowQuality}
+                flowSpeed={telemetry.flowSpeed}
+                flowRotDeg={telemetry.flowRotDeg}
+                lidarCm={telemetry.lidarCm}
+                velNorth={telemetry.velNorth}
+                velEast={telemetry.velEast}
+                isArmed={telemetry.isArmed}
+              />
+              <LiveTelemetryChart telemetry={telemetry} />
+            </div>
+            <FlowDerotationChart isArmed={telemetry.isArmed} />
           </div>
         )}
 
@@ -271,7 +347,7 @@ export const App: React.FC = () => {
       {/* Footer Status Bar */}
       <footer className="bg-[#0a0a0a] border-t border-neutral-800 px-6 py-2.5 text-[11px] font-mono text-neutral-400 flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <span>Target: ESP32 F330</span>
+          <span>Target: Oqab Flight Controller</span>
           <span>Baud: 115200 8N1</span>
           <span>Core 0: Comms & Parsing (100 Hz)</span>
           <span>Core 1: Control Loop (250 Hz)</span>

@@ -26,6 +26,7 @@ export interface DroneTelemetry {
   flowRotDeg: number;
   isArmed: boolean;
   isAirborne: boolean;
+  isSimMode: boolean;
   timestamp: number;
 }
 
@@ -40,5 +41,20 @@ export interface FlightParameter {
   category: 'Sensors & Flow' | 'Attitude Control' | 'Altitude & Hover' | 'Navigation';
 }
 
-export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'simulated';
+export type ConnectionState = 'disconnected' | 'connecting' | 'connected';
+
+export interface FlowLivePoint {
+  time: number;
+  quality: number;
+  vFwd: number;
+  vRight: number;
+  ofX: number; // Optical flow forward rate in dps
+  ofY: number; // Optical flow rightward rate in dps
+  gyroX: number; // Roll rate in dps (around X axis)
+  gyroY: number; // Pitch rate in dps (around Y axis)
+  gyroZ: number; // Yaw rate in dps (around Z axis)
+  heightM: number;
+  rawX: number;
+  rawY: number;
+}
 
