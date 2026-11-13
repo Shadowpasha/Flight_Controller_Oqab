@@ -60,7 +60,7 @@ balance_controller/
 
 ## 💻 Quick Start
 
-1. Open `balance_controller.ino` in the Arduino IDE.
+1. Open `balance_controller/balance_controller.ino` in the Arduino IDE.
 2. Select your ESP32 board (`ESP32 Dev Module`).
 3. Compile and flash via USB.
 4. Open the Serial Monitor (or connect via Bluetooth Terminal) at **115200 baud**.
@@ -74,4 +74,4 @@ balance_controller/
    * `status` - Full flight controller health report
    * `param show` / `param set <NAME> <VAL>` / `param reset` - Inspect, update, or reset Flash NVS parameters
 
-See [docs/oqab_control_estimation_architecture.tex](../docs/oqab_control_estimation_architecture.tex) for the full mathematical model, state machine, and estimator equations.
+See [docs/oqab_control_estimation_architecture.tex](docs/oqab_control_estimation_architecture.tex) for the full mathematical model, state machine, and estimator equations.
