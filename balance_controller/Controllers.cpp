@@ -92,82 +92,40 @@ void PID_Controller::compute(FlightMode mode,
   yaw_angle_iterm = 0.0f;
 
   const float MAX_RATE_ITERM = 150.0f;
-  const float MAX_ANG_ITERM  = 100.0f;
   const float D_ALPHA        = 0.25f;
 
-  if (mode == MODE_CASCADE) {
-    // Roll Cascade
-    float err_ang_roll = target_roll - roll_deg;
-    float tgt_rate_r   = constrain(Kp_angle_roll * err_ang_roll, -MAX_TARGET_RATE, MAX_TARGET_RATE);
-    float err_rate_r   = tgt_rate_r - gx_dps;
+  // Always Cascaded Architecture: Outer Angle P -> Inner Rate PID
+  // Roll Cascade
+  float err_ang_roll = target_roll - roll_deg;
+  float tgt_rate_r   = constrain(Kp_angle_roll * err_ang_roll, -MAX_TARGET_RATE, MAX_TARGET_RATE);
+  float err_rate_r   = tgt_rate_r - gx_dps;
 
-    if (run_iterm) {
-      roll_rate_iterm += Ki_rate_roll * err_rate_r * dt;
-      if (fabs(err_ang_roll) < 1.5f) roll_rate_iterm *= 0.96f;
-      roll_rate_iterm = constrain(roll_rate_iterm, -MAX_RATE_ITERM, MAX_RATE_ITERM);
-    }
-    float d_raw_roll = (gx_dps - last_gx) / dt;
-    d_gyro_roll_filt += D_ALPHA * (d_raw_roll - d_gyro_roll_filt);
-    out_roll = (Kp_rate_roll * err_rate_r) + roll_rate_iterm - (Kd_rate_roll * d_gyro_roll_filt);
-
-    // Pitch Cascade
-    float err_ang_pitch = target_pitch - pitch_deg;
-    float tgt_rate_p    = constrain(Kp_angle_pitch * err_ang_pitch, -MAX_TARGET_RATE, MAX_TARGET_RATE);
-    float err_rate_p    = tgt_rate_p - gy_dps;
-
-    if (run_iterm) {
-      pitch_rate_iterm += Ki_rate_pitch * err_rate_p * dt;
-      if (fabs(err_ang_pitch) < 1.5f) pitch_rate_iterm *= 0.96f;
-      pitch_rate_iterm = constrain(pitch_rate_iterm, -MAX_RATE_ITERM, MAX_RATE_ITERM);
-    }
-    float d_raw_pitch = (gy_dps - last_gy) / dt;
-    d_gyro_pitch_filt += D_ALPHA * (d_raw_pitch - d_gyro_pitch_filt);
-    out_pitch = (Kp_rate_pitch * err_rate_p) + pitch_rate_iterm - (Kd_rate_pitch * d_gyro_pitch_filt);
-
-    // Yaw Gyro Rate Damping
-    float err_rate_y = target_rate_y - gz_dps;
-    out_yaw = Kp_rate_yaw * err_rate_y;
-
-  } else if (mode == MODE_ANGLE) {
-    float err_ang_roll = target_roll - roll_deg;
-    if (run_iterm) {
-      roll_angle_iterm += Ki_ang_mode_roll * err_ang_roll * dt;
-      roll_angle_iterm = constrain(roll_angle_iterm, -MAX_ANG_ITERM, MAX_ANG_ITERM);
-    }
-    out_roll = (Kp_ang_mode_roll * err_ang_roll) + roll_angle_iterm - (Kd_ang_mode_roll * gx_dps);
-
-    float err_ang_pitch = target_pitch - pitch_deg;
-    if (run_iterm) {
-      pitch_angle_iterm += Ki_ang_mode_pitch * err_ang_pitch * dt;
-      pitch_angle_iterm = constrain(pitch_angle_iterm, -MAX_ANG_ITERM, MAX_ANG_ITERM);
-    }
-    out_pitch = (Kp_ang_mode_pitch * err_ang_pitch) + pitch_angle_iterm - (Kd_ang_mode_pitch * gy_dps);
-
-    float err_rate_y = target_rate_y - gz_dps;
-    out_yaw = Kp_ang_mode_yaw * err_rate_y;
-
-  } else if (mode == MODE_RATE) {
-    float err_rate_r = target_rate_r - gx_dps;
-    if (run_iterm) {
-      roll_rate_iterm += Ki_rate_roll * err_rate_r * dt;
-      roll_rate_iterm = constrain(roll_rate_iterm, -MAX_RATE_ITERM, MAX_RATE_ITERM);
-    }
-    float d_raw_roll = (gx_dps - last_gx) / dt;
-    d_gyro_roll_filt += D_ALPHA * (d_raw_roll - d_gyro_roll_filt);
-    out_roll = (Kp_rate_roll * err_rate_r) + roll_rate_iterm - (Kd_rate_roll * d_gyro_roll_filt);
-
-    float err_rate_p = target_rate_p - gy_dps;
-    if (run_iterm) {
-      pitch_rate_iterm += Ki_rate_pitch * err_rate_p * dt;
-      pitch_rate_iterm = constrain(pitch_rate_iterm, -MAX_RATE_ITERM, MAX_RATE_ITERM);
-    }
-    float d_raw_pitch = (gy_dps - last_gy) / dt;
-    d_gyro_pitch_filt += D_ALPHA * (d_raw_pitch - d_gyro_pitch_filt);
-    out_pitch = (Kp_rate_pitch * err_rate_p) + pitch_rate_iterm - (Kd_rate_pitch * d_gyro_pitch_filt);
-
-    float err_rate_y = target_rate_y - gz_dps;
-    out_yaw = Kp_rate_yaw * err_rate_y;
+  if (run_iterm) {
+    roll_rate_iterm += Ki_rate_roll * err_rate_r * dt;
+    if (fabs(err_ang_roll) < 1.5f) roll_rate_iterm *= 0.96f;
+    roll_rate_iterm = constrain(roll_rate_iterm, -MAX_RATE_ITERM, MAX_RATE_ITERM);
   }
+  float d_raw_roll = (gx_dps - last_gx) / dt;
+  d_gyro_roll_filt += D_ALPHA * (d_raw_roll - d_gyro_roll_filt);
+  out_roll = (Kp_rate_roll * err_rate_r) + roll_rate_iterm - (Kd_rate_roll * d_gyro_roll_filt);
+
+  // Pitch Cascade
+  float err_ang_pitch = target_pitch - pitch_deg;
+  float tgt_rate_p    = constrain(Kp_angle_pitch * err_ang_pitch, -MAX_TARGET_RATE, MAX_TARGET_RATE);
+  float err_rate_p    = tgt_rate_p - gy_dps;
+
+  if (run_iterm) {
+    pitch_rate_iterm += Ki_rate_pitch * err_rate_p * dt;
+    if (fabs(err_ang_pitch) < 1.5f) pitch_rate_iterm *= 0.96f;
+    pitch_rate_iterm = constrain(pitch_rate_iterm, -MAX_RATE_ITERM, MAX_RATE_ITERM);
+  }
+  float d_raw_pitch = (gy_dps - last_gy) / dt;
+  d_gyro_pitch_filt += D_ALPHA * (d_raw_pitch - d_gyro_pitch_filt);
+  out_pitch = (Kp_rate_pitch * err_rate_p) + pitch_rate_iterm - (Kd_rate_pitch * d_gyro_pitch_filt);
+
+  // Yaw Gyro Rate Damping
+  float err_rate_y = target_rate_y - gz_dps;
+  out_yaw = Kp_rate_yaw * err_rate_y;
 
   last_gx = gx_dps;
   last_gy = gy_dps;
@@ -246,77 +204,37 @@ void SMC_Controller::compute(FlightMode mode,
   }
   yaw_smc_integral = 0.0f;
 
-  if (mode == MODE_CASCADE) {
-    // 1. Roll Cascade: Outer Angle P -> Inner Rate SMC
-    float err_ang_roll = target_roll - roll_deg;
-    float tgt_rate_r   = constrain(Kp_angle_roll * err_ang_roll, -220.0f, 220.0f);
-    float err_rate_r   = tgt_rate_r - gx_dps;
+  // Attitude loop is always cascaded: Outer Angle P -> Inner Rate SMC
+  // 1. Roll Cascade: Outer Angle P -> Inner Rate SMC
+  float err_ang_roll = target_roll - roll_deg;
+  float tgt_rate_r   = constrain(Kp_angle_roll * err_ang_roll, -220.0f, 220.0f);
+  float err_rate_r   = tgt_rate_r - gx_dps;
 
-    if (run_iterm) {
-      roll_smc_integral += err_rate_r * dt;
-      if (fabs(err_ang_roll) < 1.5f) roll_smc_integral *= 0.96f;
-      roll_smc_integral = constrain(roll_smc_integral, -MAX_SMC_ITERM, MAX_SMC_ITERM);
-    }
-    float s_roll = err_rate_r + (lambda_smc_roll * roll_smc_integral);
-    out_roll = (Kp_smc_roll * s_roll) + (Ksw_smc_roll * sat_smc(s_roll, phi_smc_roll));
-
-    // 2. Pitch Cascade: Outer Angle P -> Inner Rate SMC
-    float err_ang_pitch = target_pitch - pitch_deg;
-    float tgt_rate_p    = constrain(Kp_angle_pitch * err_ang_pitch, -220.0f, 220.0f);
-    float err_rate_p    = tgt_rate_p - gy_dps;
-
-    if (run_iterm) {
-      pitch_smc_integral += err_rate_p * dt;
-      if (fabs(err_ang_pitch) < 1.5f) pitch_smc_integral *= 0.96f;
-      pitch_smc_integral = constrain(pitch_smc_integral, -MAX_SMC_ITERM, MAX_SMC_ITERM);
-    }
-    float s_pitch = err_rate_p + (lambda_smc_pitch * pitch_smc_integral);
-    out_pitch = (Kp_smc_pitch * s_pitch) + (Ksw_smc_pitch * sat_smc(s_pitch, phi_smc_pitch));
-
-    // 3. Yaw Rate SMC Damping
-    float err_rate_y = target_rate_y - gz_dps;
-    float s_yaw      = err_rate_y;
-    out_yaw = (Kp_smc_yaw * s_yaw) + (Ksw_smc_yaw * sat_smc(s_yaw, phi_smc_yaw));
-
-  } else if (mode == MODE_ANGLE) {
-    float err_ang_roll = target_roll - roll_deg;
-    if (run_iterm) {
-      roll_angle_iterm += Ki_ang_mode_roll * err_ang_roll * dt;
-      roll_angle_iterm = constrain(roll_angle_iterm, -MAX_ANG_ITERM, MAX_ANG_ITERM);
-    }
-    out_roll = (Kp_ang_mode_roll * err_ang_roll) + roll_angle_iterm - (Kd_ang_mode_roll * gx_dps);
-
-    float err_ang_pitch = target_pitch - pitch_deg;
-    if (run_iterm) {
-      pitch_angle_iterm += Ki_ang_mode_pitch * err_ang_pitch * dt;
-      pitch_angle_iterm = constrain(pitch_angle_iterm, -MAX_ANG_ITERM, MAX_ANG_ITERM);
-    }
-    out_pitch = (Kp_ang_mode_pitch * err_ang_pitch) + pitch_angle_iterm - (Kd_ang_mode_pitch * gy_dps);
-
-    float err_rate_y = target_rate_y - gz_dps;
-    out_yaw = Kp_ang_mode_yaw * err_rate_y;
-
-  } else if (mode == MODE_RATE) {
-    float err_rate_r = target_rate_r - gx_dps;
-    if (run_iterm) {
-      roll_smc_integral += err_rate_r * dt;
-      roll_smc_integral = constrain(roll_smc_integral, -MAX_SMC_ITERM, MAX_SMC_ITERM);
-    }
-    float s_roll = err_rate_r + (lambda_smc_roll * roll_smc_integral);
-    out_roll = (Kp_smc_roll * s_roll) + (Ksw_smc_roll * sat_smc(s_roll, phi_smc_roll));
-
-    float err_rate_p = target_rate_p - gy_dps;
-    if (run_iterm) {
-      pitch_smc_integral += err_rate_p * dt;
-      pitch_smc_integral = constrain(pitch_smc_integral, -MAX_SMC_ITERM, MAX_SMC_ITERM);
-    }
-    float s_pitch = err_rate_p + (lambda_smc_pitch * pitch_smc_integral);
-    out_pitch = (Kp_smc_pitch * s_pitch) + (Ksw_smc_pitch * sat_smc(s_pitch, phi_smc_pitch));
-
-    float err_rate_y = target_rate_y - gz_dps;
-    float s_yaw      = err_rate_y;
-    out_yaw = (Kp_smc_yaw * s_yaw) + (Ksw_smc_yaw * sat_smc(s_yaw, phi_smc_yaw));
+  if (run_iterm) {
+    roll_smc_integral += err_rate_r * dt;
+    if (fabs(err_ang_roll) < 1.5f) roll_smc_integral *= 0.96f;
+    roll_smc_integral = constrain(roll_smc_integral, -MAX_SMC_ITERM, MAX_SMC_ITERM);
   }
+  float s_roll = err_rate_r + (lambda_smc_roll * roll_smc_integral);
+  out_roll = (Kp_smc_roll * s_roll) + (Ksw_smc_roll * sat_smc(s_roll, phi_smc_roll));
+
+  // 2. Pitch Cascade: Outer Angle P -> Inner Rate SMC
+  float err_ang_pitch = target_pitch - pitch_deg;
+  float tgt_rate_p    = constrain(Kp_angle_pitch * err_ang_pitch, -220.0f, 220.0f);
+  float err_rate_p    = tgt_rate_p - gy_dps;
+
+  if (run_iterm) {
+    pitch_smc_integral += err_rate_p * dt;
+    if (fabs(err_ang_pitch) < 1.5f) pitch_smc_integral *= 0.96f;
+    pitch_smc_integral = constrain(pitch_smc_integral, -MAX_SMC_ITERM, MAX_SMC_ITERM);
+  }
+  float s_pitch = err_rate_p + (lambda_smc_pitch * pitch_smc_integral);
+  out_pitch = (Kp_smc_pitch * s_pitch) + (Ksw_smc_pitch * sat_smc(s_pitch, phi_smc_pitch));
+
+  // 3. Yaw Rate SMC Damping
+  float err_rate_y = target_rate_y - gz_dps;
+  float s_yaw      = err_rate_y;
+  out_yaw = (Kp_smc_yaw * s_yaw) + (Ksw_smc_yaw * sat_smc(s_yaw, phi_smc_yaw));
 }
 
 // =============================================================================
@@ -449,30 +367,17 @@ void ADRC_Controller::compute(FlightMode mode,
                               float &out_roll, float &out_pitch, float &out_yaw) {
   bool hold_dist = !run_iterm;
 
-  if (mode == MODE_CASCADE) {
-    float err_ang_roll  = target_roll - roll_deg;
-    float tgt_rate_r    = constrain(Kp_cascade_roll * err_ang_roll, -MAX_TARGET_RATE, MAX_TARGET_RATE);
-    out_roll = ladrc_rate_phi.update(gx_dps, tgt_rate_r, hold_dist);
+  // Cascaded attitude: Outer Angle P -> Inner Rate LADRC
+  float err_ang_roll  = target_roll - roll_deg;
+  float tgt_rate_r    = constrain(Kp_cascade_roll * err_ang_roll, -MAX_TARGET_RATE, MAX_TARGET_RATE);
+  out_roll = ladrc_rate_phi.update(gx_dps, tgt_rate_r, hold_dist);
 
-    float err_ang_pitch = target_pitch - pitch_deg;
-    float tgt_rate_p    = constrain(Kp_cascade_pitch * err_ang_pitch, -MAX_TARGET_RATE, MAX_TARGET_RATE);
-    out_pitch = ladrc_rate_theta.update(gy_dps, tgt_rate_p, hold_dist);
+  float err_ang_pitch = target_pitch - pitch_deg;
+  float tgt_rate_p    = constrain(Kp_cascade_pitch * err_ang_pitch, -MAX_TARGET_RATE, MAX_TARGET_RATE);
+  out_pitch = ladrc_rate_theta.update(gy_dps, tgt_rate_p, hold_dist);
 
-    float err_rate_y = target_rate_y - gz_dps;
-    out_yaw = Kp_rate_yaw * err_rate_y;
-
-  } else if (mode == MODE_ANGLE) {
-    out_roll  = ladrc_ang_phi.update(roll_deg, target_roll, gx_dps, hold_dist);
-    out_pitch = ladrc_ang_theta.update(pitch_deg, target_pitch, gy_dps, hold_dist);
-
-    float err_rate_y = target_rate_y - gz_dps;
-    out_yaw = Kp_rate_yaw * err_rate_y;
-
-  } else if (mode == MODE_RATE) {
-    out_roll  = ladrc_rate_phi.update(gx_dps, target_rate_r, hold_dist);
-    out_pitch = ladrc_rate_theta.update(gy_dps, target_rate_p, hold_dist);
-    out_yaw   = ladrc_rate_psi.update(gz_dps, target_rate_y, hold_dist);
-  }
+  float err_rate_y = target_rate_y - gz_dps;
+  out_yaw = Kp_rate_yaw * err_rate_y;
 }
 
 // =============================================================================
@@ -643,13 +548,8 @@ void MDBCI_Controller::compute(FlightMode mode,
                                float &out_roll, float &out_pitch, float &out_yaw) {
   bool is_steady_state = (flightMgr.flight_stage == STAGE_HOVER) || flightMgr.sim_mode;
 
-  if (mode == MODE_RATE) {
-    out_roll  = roll_axis.compute(roll_deg, gx_dps, roll_deg, target_rate_r, 0.0f, dt, run_iterm, is_steady_state, enable_switching, forced_mode);
-    out_pitch = pitch_axis.compute(pitch_deg, gy_dps, pitch_deg, target_rate_p, 0.0f, dt, run_iterm, is_steady_state, enable_switching, forced_mode);
-  } else {
-    out_roll  = roll_axis.compute(roll_deg, gx_dps, target_roll, target_rate_r, 0.0f, dt, run_iterm, is_steady_state, enable_switching, forced_mode);
-    out_pitch = pitch_axis.compute(pitch_deg, gy_dps, target_pitch, target_rate_p, 0.0f, dt, run_iterm, is_steady_state, enable_switching, forced_mode);
-  }
+  out_roll  = roll_axis.compute(roll_deg, gx_dps, target_roll, target_rate_r, 0.0f, dt, run_iterm, is_steady_state, enable_switching, forced_mode);
+  out_pitch = pitch_axis.compute(pitch_deg, gy_dps, target_pitch, target_rate_p, 0.0f, dt, run_iterm, is_steady_state, enable_switching, forced_mode);
 
   // Yaw Gyro Rate Damping
   float err_yaw_rate = target_rate_y - gz_dps;
@@ -689,13 +589,8 @@ void VIABC_Controller::compute(FlightMode mode,
                                float &out_roll, float &out_pitch, float &out_yaw) {
   bool is_steady_state = (flightMgr.flight_stage == STAGE_HOVER) || flightMgr.sim_mode;
 
-  if (mode == MODE_RATE) {
-    out_roll  = roll_axis.compute(roll_deg, gx_dps, roll_deg, target_rate_r, 0.0f, dt, run_iterm, is_steady_state);
-    out_pitch = pitch_axis.compute(pitch_deg, gy_dps, pitch_deg, target_rate_p, 0.0f, dt, run_iterm, is_steady_state);
-  } else {
-    out_roll  = roll_axis.compute(roll_deg, gx_dps, target_roll, target_rate_r, 0.0f, dt, run_iterm, is_steady_state);
-    out_pitch = pitch_axis.compute(pitch_deg, gy_dps, target_pitch, target_rate_p, 0.0f, dt, run_iterm, is_steady_state);
-  }
+  out_roll  = roll_axis.compute(roll_deg, gx_dps, target_roll, target_rate_r, 0.0f, dt, run_iterm, is_steady_state);
+  out_pitch = pitch_axis.compute(pitch_deg, gy_dps, target_pitch, target_rate_p, 0.0f, dt, run_iterm, is_steady_state);
 
   // Yaw Gyro Rate Damping
   float err_yaw_rate = target_rate_y - gz_dps;
@@ -803,17 +698,17 @@ void initControllers(float dt) {
   posControl.target_pos_east_m   = 0.0f;
   posControl.target_roll_deg     = 0.0f;
   posControl.target_pitch_deg    = 0.0f;
-  posControl.Kp_pos              = 1.2f;   // 1.0 m error -> 1.2 m/s desired return speed
-  posControl.Kp_vel              = 3.5f;   // 1.0 m/s velocity error -> 3.5 deg tilt (PX4 MPC_VEL_P_ACC)
-  posControl.Ki_vel              = 1.0f;   // Integrates out steady wind / CG trim offset (PX4 MPC_VEL_I_ACC)
-  posControl.Kd_vel              = 0.15f;  // Velocity damping against rapid speed changes (PX4 MPC_VEL_D_ACC)
+  posControl.Kp_pos              = 0.60f;  // Gentle position P: 1.0 m error -> 0.6 m/s desired return speed
+  posControl.Kp_vel              = 1.50f;  // Gentle velocity P: 1.0 m/s velocity error -> 1.5 deg tilt (prevents flips)
+  posControl.Ki_vel              = 0.25f;  // Gentle velocity I: integrates out steady trim smoothly without windup
+  posControl.Kd_vel              = 0.08f;  // Velocity damping against rapid speed changes
   posControl.vel_i_fwd           = 0.0f;
   posControl.vel_i_right         = 0.0f;
-  posControl.max_i_tilt          = 7.0f;   // Up to 7.0 deg tilt authority for wind rejection and CG trim
+  posControl.max_i_tilt          = 1.5f;   // Max 1.5 deg tilt authority for I-term
   posControl.last_vel_fwd        = 0.0f;
   posControl.last_vel_right      = 0.0f;
-  posControl.max_vel_mps         = 1.5f;   // 1.5 m/s horizontal return velocity cap
-  posControl.max_tilt_deg        = 12.0f;  // 12.0 deg max tilt limit (matches safe outdoor capability)
+  posControl.max_vel_mps         = 0.60f;  // Gentle 0.60 m/s horizontal return velocity cap
+  posControl.max_tilt_deg        = 4.0f;   // Gentle 4.0 deg max tilt limit (corrects drift safely without flipping)
   posControl.Kd_pos              = posControl.Kp_vel; // Compatibility mirror
 }
 
@@ -934,9 +829,10 @@ void computeAltitudeControl(float dt, int base_throttle_us, FlightStage stage, b
   float acc_sp_z = p_acc + altControl.vel_i_z - d_acc;
 
   // 4. Map Acceleration [m/s^2] to Throttle PWM Adjustment [us]
-  float hover_thrust_us = (float)(base_throttle_us - 1000);
-  if (hover_thrust_us < 200.0f) hover_thrust_us = 400.0f;
-  float acc_to_pwm = hover_thrust_us / 9.80665f; // ~40-45 us per m/s^2
+  // Use nominal hover baseline (takeoff_throttle_target) rather than base_throttle_us so gain does not feed back on alt_throttle_adj
+  float hover_thrust_us = (float)(flightMgr.takeoff_throttle_target - 1000);
+  if (hover_thrust_us < 200.0f) hover_thrust_us = 450.0f;
+  float acc_to_pwm = hover_thrust_us / 9.80665f; // ~45 us per m/s^2
 
   float raw_adj = acc_sp_z * acc_to_pwm;
   bool ceiling_emergency = false;
@@ -1006,7 +902,8 @@ void resetPositionControl() {
 
 void computePositionControl(float dt, bool is_airborne, bool sim_mode) {
   bool has_pos_ref = droneState.flow_enabled || (droneState.gps_enabled && droneState.has_gps_home);
-  bool active = posControl.pos_hold_enabled && has_pos_ref && (sim_mode || is_airborne);
+  bool cleared_ground = (droneState.current_height_cm >= (droneState.ground_height_cm + POS_HOLD_MIN_AGL_CM));
+  bool active = posControl.pos_hold_enabled && has_pos_ref && (sim_mode || (is_airborne && cleared_ground));
   if (!active) {
     resetPositionControl();
     return;
@@ -1021,14 +918,22 @@ void computePositionControl(float dt, bool is_airborne, bool sim_mode) {
     return;
   }
 
-  // Latch current position when position hold becomes active (hold current location, like PX4 POSCTL)
+  // Body-frame rotation trig (absolute heading — yaw_deg is relative and would mis-rotate)
+  float yaw_rad = droneState.yaw_absolute_deg * DEG_TO_RAD;
+  float cos_y   = cos(yaw_rad);
+  float sin_y   = sin(yaw_rad);
+
+  float vel_fwd   =  droneState.vel_north_filt * cos_y + droneState.vel_east_filt * sin_y;
+  float vel_right = -droneState.vel_north_filt * sin_y + droneState.vel_east_filt * cos_y;
+
+  // Latch current position when position hold becomes active (hold takeoff-cleared location, like PX4 POSCTL)
   if (!posControl.setpoint_latched) {
     posControl.target_pos_north_m = droneState.pos_north_m;
     posControl.target_pos_east_m  = droneState.pos_east_m;
     posControl.vel_i_fwd          = 0.0f;
     posControl.vel_i_right        = 0.0f;
-    posControl.last_vel_fwd       = droneState.vel_north_filt;
-    posControl.last_vel_right     = droneState.vel_east_filt;
+    posControl.last_vel_fwd       = vel_fwd;
+    posControl.last_vel_right     = vel_right;
     posControl.setpoint_latched   = true;
   }
 
@@ -1036,20 +941,12 @@ void computePositionControl(float dt, bool is_airborne, bool sim_mode) {
   float err_north = posControl.target_pos_north_m - droneState.pos_north_m;
   float err_east  = posControl.target_pos_east_m  - droneState.pos_east_m;
 
-  // 2. Rotate World NED vectors into Drone Body Frame (Forward / Right)
-  //    Must use absolute heading — yaw_deg is relative (0 at arm) and would mis-rotate after yaw offset is applied
-  float yaw_rad = droneState.yaw_absolute_deg * DEG_TO_RAD;
-  float cos_y   = cos(yaw_rad);
-  float sin_y   = sin(yaw_rad);
-
+  // 2. Rotate World NED position error into Drone Body Frame (Forward / Right)
   float err_fwd   =  err_north * cos_y + err_east * sin_y;
   float err_right = -err_north * sin_y + err_east * cos_y;
 
-  float vel_fwd   =  droneState.vel_north_filt * cos_y + droneState.vel_east_filt * sin_y;
-  float vel_right = -droneState.vel_north_filt * sin_y + droneState.vel_east_filt * cos_y;
-
   // 3. Outer Loop: Position P -> Desired Horizontal Velocity (with velocity clamp)
-  float max_vel = (posControl.max_vel_mps > 0.1f) ? posControl.max_vel_mps : 1.5f;
+  float max_vel = (posControl.max_vel_mps > 0.1f) ? posControl.max_vel_mps : 0.60f;
   float tgt_vel_fwd   = constrain(posControl.Kp_pos * err_fwd,   -max_vel, max_vel);
   float tgt_vel_right = constrain(posControl.Kp_pos * err_right, -max_vel, max_vel);
 
@@ -1063,7 +960,7 @@ void computePositionControl(float dt, bool is_airborne, bool sim_mode) {
     posControl.vel_i_fwd   += posControl.Ki_vel * err_v_fwd   * dt;
     posControl.vel_i_right += posControl.Ki_vel * err_v_right * dt;
 
-    float max_i = (posControl.max_i_tilt > 0.0f) ? posControl.max_i_tilt : 4.0f;
+    float max_i = (posControl.max_i_tilt > 0.0f) ? posControl.max_i_tilt : 1.5f;
     posControl.vel_i_fwd   = constrain(posControl.vel_i_fwd,   -max_i, max_i);
     posControl.vel_i_right = constrain(posControl.vel_i_right, -max_i, max_i);
   } else {
@@ -1077,8 +974,8 @@ void computePositionControl(float dt, bool is_airborne, bool sim_mode) {
   if (dt > 0.0001f && dt < 0.1f) {
     d_term_fwd   = posControl.Kd_vel * (vel_fwd   - posControl.last_vel_fwd)   / dt;
     d_term_right = posControl.Kd_vel * (vel_right - posControl.last_vel_right) / dt;
-    d_term_fwd   = constrain(d_term_fwd,   -3.0f, 3.0f);
-    d_term_right = constrain(d_term_right, -3.0f, 3.0f);
+    d_term_fwd   = constrain(d_term_fwd,   -2.0f, 2.0f);
+    d_term_right = constrain(d_term_right, -2.0f, 2.0f);
   }
   posControl.last_vel_fwd   = vel_fwd;
   posControl.last_vel_right = vel_right;
@@ -1090,7 +987,7 @@ void computePositionControl(float dt, bool is_airborne, bool sim_mode) {
   float out_roll  = (posControl.Kp_vel * err_v_right) + posControl.vel_i_right - d_term_right;
 
   // Saturated tilt angles to maintain aerodynamic authority and safe headroom
-  float max_tilt = (posControl.max_tilt_deg > 1.0f) ? posControl.max_tilt_deg : 12.0f;
+  float max_tilt = (posControl.max_tilt_deg > 1.0f) ? posControl.max_tilt_deg : 4.0f;
   posControl.target_pitch_deg = constrain(out_pitch, -max_tilt, max_tilt);
   posControl.target_roll_deg  = constrain(out_roll,  -max_tilt, max_tilt);
 }

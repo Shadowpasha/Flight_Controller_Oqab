@@ -15,7 +15,7 @@ static bool prefs_open = false;
 // Proxy variables for parameters requiring conversion or setter hooks
 static int   s_hover_time_s    = 6;
 static int   s_controller_type = DEFAULT_CONTROLLER;
-static int   s_flight_mode     = MODE_CASCADE;
+static int   s_flight_mode     = MODE_POS_HOLD;
 static int   s_board_rot       = 0;
 
 // =============================================================================
@@ -23,9 +23,14 @@ static int   s_board_rot       = 0;
 // =============================================================================
 static Parameter paramTable[] = {
   // --- 1. Multicopter Altitude & Takeoff (MPC_...) ---
-  { "MPC_THR_HOVER",   PARAM_TYPE_INT,   &flightMgr.takeoff_throttle_target, 1320.0f, 1150.0f, 1600.0f, "Nominal Hover Throttle [us]" },
-  { "MPC_RAMP_UP",     PARAM_TYPE_FLOAT, &flightMgr.throttle_ramp_rate,       40.0f,   10.0f,   120.0f, "Climb Ramp Rate [us/s]" },
-  { "MPC_RAMP_DN",     PARAM_TYPE_FLOAT, &flightMgr.land_ramp_rate,           35.0f,   10.0f,   100.0f, "Descent Ramp Rate [us/s]" },
+  { "MPC_THR_ARM_MIN", PARAM_TYPE_INT,   &flightMgr.min_armed_throttle_us,   1080.0f, 1020.0f, 1200.0f, "Minimum Armed Idle Throttle [us]" },
+  { "MPC_THR_HOVER",   PARAM_TYPE_INT,   &flightMgr.takeoff_throttle_target, 1450.0f, 1150.0f, 1700.0f, "Nominal Hover Throttle [us]" },
+  { "MPC_THR_LAND",    PARAM_TYPE_INT,   &flightMgr.land_throttle_target,    1140.0f, 1080.0f, 1300.0f, "Landing Floor Throttle [us]" },
+  { "MIS_STOP_LAND",   PARAM_TYPE_BOOL,  &flightMgr.stop_triggers_land,       1.0f,    0.0f,    1.0f,   "Stop Triggers Controlled Land (0/1)" },
+  { "MPC_RAMP_UP",     PARAM_TYPE_FLOAT, &flightMgr.throttle_ramp_rate,       70.0f,   10.0f,   150.0f, "Climb Ramp Rate [us/s]" },
+  { "MPC_RAMP_DN",     PARAM_TYPE_FLOAT, &flightMgr.land_ramp_rate,           35.0f,   10.0f,   100.0f, "Normal Descent Ramp Rate [us/s]" },
+  { "MPC_RAMP_EMG",    PARAM_TYPE_FLOAT, &flightMgr.emerg_land_ramp_rate,     100.0f,  20.0f,   250.0f, "Emergency Descent Ramp Rate [us/s]" },
+  { "MPC_HOVER_LEARN", PARAM_TYPE_BOOL,  &flightMgr.auto_hover_calc_enabled,  1.0f,    0.0f,    1.0f,   "Auto Hover Throttle Learning (0/1)" },
   { "MPC_Z_TARGET",    PARAM_TYPE_FLOAT, &altControl.target_height_cm,       DEFAULT_TARGET_HEIGHT_CM, 15.0f, 180.0f, "Target Hover Height [cm]" },
   { "MPC_Z_P",         PARAM_TYPE_FLOAT, &altControl.Kp_pos_z,                1.0f,    0.1f,    5.0f,   "Altitude Position P-gain" },
   { "MPC_Z_VEL_P",     PARAM_TYPE_FLOAT, &altControl.Kp_vel_z,                1.8f,    0.2f,    8.0f,   "Altitude Velocity P-gain" },
@@ -39,12 +44,12 @@ static Parameter paramTable[] = {
 
   // --- 2. Multicopter Position / Horizontal GPS (MPC_...) ---
   { "MPC_POS_HOLD",    PARAM_TYPE_BOOL,  &posControl.pos_hold_enabled,        1.0f,    0.0f,    1.0f,   "GPS Position Hold Enable (0/1)" },
-  { "MPC_XY_P",        PARAM_TYPE_FLOAT, &posControl.Kp_pos,                  1.2f,    0.1f,    5.0f,   "Horizontal Position P-gain" },
-  { "MPC_XY_VEL_P",    PARAM_TYPE_FLOAT, &posControl.Kp_vel,                  3.5f,    0.5f,    10.0f,  "Horizontal Velocity P-gain" },
-  { "MPC_XY_VEL_I",    PARAM_TYPE_FLOAT, &posControl.Ki_vel,                  1.0f,    0.0f,    5.0f,   "Horizontal Velocity I-gain" },
-  { "MPC_XY_VEL_D",    PARAM_TYPE_FLOAT, &posControl.Kd_vel,                  0.15f,   0.0f,    1.0f,   "Horizontal Velocity D-gain" },
-  { "MPC_XY_MAX_VEL",  PARAM_TYPE_FLOAT, &posControl.max_vel_mps,             1.5f,    0.2f,    5.0f,   "Max Return Speed [m/s]" },
-  { "MPC_XY_MAX_TILT", PARAM_TYPE_FLOAT, &posControl.max_tilt_deg,            12.0f,   3.0f,    30.0f,  "Max Tilt Angle [deg]" },
+  { "MPC_XY_P",        PARAM_TYPE_FLOAT, &posControl.Kp_pos,                  0.60f,   0.05f,   5.0f,   "Horizontal Position P-gain" },
+  { "MPC_XY_VEL_P",    PARAM_TYPE_FLOAT, &posControl.Kp_vel,                  1.50f,   0.2f,    10.0f,  "Horizontal Velocity P-gain" },
+  { "MPC_XY_VEL_I",    PARAM_TYPE_FLOAT, &posControl.Ki_vel,                  0.25f,   0.0f,    5.0f,   "Horizontal Velocity I-gain" },
+  { "MPC_XY_VEL_D",    PARAM_TYPE_FLOAT, &posControl.Kd_vel,                  0.08f,   0.0f,    1.0f,   "Horizontal Velocity D-gain" },
+  { "MPC_XY_MAX_VEL",  PARAM_TYPE_FLOAT, &posControl.max_vel_mps,             0.60f,   0.1f,    5.0f,   "Max Return Speed [m/s]" },
+  { "MPC_XY_MAX_TILT", PARAM_TYPE_FLOAT, &posControl.max_tilt_deg,            4.0f,    1.0f,    30.0f,  "Max Tilt Angle [deg]" },
 
   // --- 3. Multicopter Attitude PID (MC_...) ---
   { "MC_ROLL_P",       PARAM_TYPE_FLOAT, &pidController.Kp_angle_roll,        2.0f,    0.1f,    10.0f,  "Cascade Roll Angle P" },
@@ -69,12 +74,15 @@ static Parameter paramTable[] = {
   { "IMU_POS_X",       PARAM_TYPE_FLOAT, &droneState.imu_pos_x_m,              IMU_POS_X_M,                             -0.50f, 0.50f, "IMU Offset from CM X (Fwd) [m]" },
   { "IMU_POS_Y",       PARAM_TYPE_FLOAT, &droneState.imu_pos_y_m,              IMU_POS_Y_M,                             -0.50f, 0.50f, "IMU Offset from CM Y (Right) [m]" },
   { "SYS_CTRL_TYPE",   PARAM_TYPE_INT,   &s_controller_type,                  (float)DEFAULT_CONTROLLER, 0.0f, 8.0f, "Active Controller (0=PID..3=MDBCI..8=VIABC)" },
-  { "SYS_FLIGHT_MOD",  PARAM_TYPE_INT,   &s_flight_mode,                      0.0f,    0.0f,    2.0f,   "Flight Mode (0=CASCADE, 1=ANGLE, 2=RATE)" },
+  { "SYS_FLIGHT_MOD",  PARAM_TYPE_INT,   &s_flight_mode,                      0.0f,    0.0f,    2.0f,   "Flight Mode (0=POS_HOLD, 1=ALT_HOLD, 2=MANUAL)" },
   { "MAG_DECL_DEG",    PARAM_TYPE_FLOAT, &droneState.mag_declination_deg,     0.0f,    -180.0f, 180.0f, "Magnetic Declination [deg]" },
   { "SENS_BOARD_ROT",  PARAM_TYPE_INT,   &s_board_rot,                        0.0f,    0.0f,    5.0f,   "IMU Board Orientation (0=Default..5=Pitch180)" },
   { "SAFE_MAX_TILT",   PARAM_TYPE_FLOAT, &flightMgr.max_tilt_angle_deg,       40.0f,   15.0f,   60.0f,  "Crash Protection Max Tilt [deg]" },
   { "SAFE_TIMEOUT_S",  PARAM_TYPE_INT,   &flightMgr.timeout_safety_s,         30.0f,   5.0f,    120.0f, "Safety Watchdog Disarm Timeout [s]" },
   { "SAFE_CEIL_CM",    PARAM_TYPE_FLOAT, &flightMgr.max_safe_ceiling_cm,      185.0f,  50.0f,   200.0f, "ToF LiDAR Ceiling Protection [cm]" },
+  { "MIS_TAKEOFF_ALT", PARAM_TYPE_FLOAT, &altControl.target_height_cm,       DEFAULT_TARGET_HEIGHT_CM, 15.0f, 180.0f, "Mission Default Takeoff Alt [cm]" },
+  { "MIS_HOVER_S",     PARAM_TYPE_INT,   &s_hover_time_s,                     6.0f,    1.0f,    300.0f, "Mission Default Hover Time [s]" },
+  { "MIS_WAYPOINT_SPD",PARAM_TYPE_FLOAT, &posControl.max_vel_mps,             1.5f,    0.2f,    5.0f,   "Mission Waypoint Speed [m/s]" },
 
   // --- Calibration Offsets (CAL_...) ---
   { "CAL_ROLL_OFF",    PARAM_TYPE_FLOAT, &droneState.cal_roll_offset,          0.0f,    -30.0f,  30.0f,  "Level Accel Roll Offset [deg]" },

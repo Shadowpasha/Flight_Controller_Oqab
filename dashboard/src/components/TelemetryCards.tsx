@@ -95,6 +95,14 @@ export const TelemetryCards: React.FC<Props> = ({ telemetry }) => {
           <span>Mode: {telemetry.mode}</span>
           <span>Home: {telemetry.homeOrigin}</span>
         </div>
+        {telemetry.isSimMode && (
+          <div className="mt-1 pt-1 border-t border-neutral-800/80 text-[10px] font-mono flex items-center justify-between text-neutral-400">
+            <span>PID Out:</span>
+            <span className="text-amber-400 font-semibold">
+              R:{telemetry.outRoll >= 0 ? '+' : ''}{telemetry.outRoll.toFixed(0)} P:{telemetry.outPitch >= 0 ? '+' : ''}{telemetry.outPitch.toFixed(0)} Y:{telemetry.outYaw >= 0 ? '+' : ''}{telemetry.outYaw.toFixed(0)}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );

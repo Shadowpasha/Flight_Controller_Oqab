@@ -21,6 +21,9 @@ export interface DroneTelemetry {
   rollDeg: number;
   pitchDeg: number;
   yawDeg: number;
+  outRoll: number;
+  outPitch: number;
+  outYaw: number;
   flowQuality: number;
   flowSpeed: number;
   flowRotDeg: number;
@@ -42,6 +45,22 @@ export interface FlightParameter {
 }
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected';
+
+export type MissionBlockType = 'TAKEOFF' | 'WAYPOINT' | 'DELAY' | 'LAND';
+
+export interface MissionBlock {
+  id: string;
+  type: MissionBlockType;
+  title: string;
+  // Parameters
+  altCm?: number;
+  climbRateCmps?: number;
+  northM?: number;
+  eastM?: number;
+  speedMps?: number;
+  durationS?: number;
+  descRateCmps?: number;
+}
 
 export interface FlowLivePoint {
   time: number;

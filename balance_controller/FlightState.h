@@ -17,9 +17,14 @@ struct FlightManager {
   int          takeoff_throttle_target;
   int          target_throttle_us;
   int          land_throttle_target;
+  int          min_armed_throttle_us;  // Minimum spin speed when armed at idle (default: MIN_ARMED_PWM)
+  bool         stop_triggers_land;     // When true, 'start' toggle or stop command initiates landing instead of direct motor cut
   float        current_throttle_us;
   float        throttle_ramp_rate;     // [us/s] Climb ramp rate (default: THROTTLE_RAMP_RATE)
-  float        land_ramp_rate;         // [us/s] Descent ramp rate (default: LAND_RAMP_RATE)
+  float        land_ramp_rate;         // [us/s] Normal descent ramp rate (default: LAND_RAMP_RATE)
+  float        emerg_land_ramp_rate;   // [us/s] Emergency descent ramp rate (default: EMERG_LAND_RAMP_RATE)
+  bool         is_emergency_landing;   // True when landing is triggered by emergency/start toggle/stop
+  bool         auto_hover_calc_enabled;// When true, learns/latches hover throttle automatically (can be disabled)
 
   bool         auto_landing_enabled;
   unsigned long hover_duration_ms;

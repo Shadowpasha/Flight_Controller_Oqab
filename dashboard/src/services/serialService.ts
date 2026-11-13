@@ -35,10 +35,13 @@ class SerialService {
     lidarCm: 10.0,
     stateTag: 'DISARM',
     controller: 'MDBCI',
-    mode: 'CAS',
+    mode: 'POS',
     rollDeg: 0.0,
     pitchDeg: 0.0,
     yawDeg: 0.0,
+    outRoll: 0.0,
+    outPitch: 0.0,
+    outYaw: 0.0,
     flowQuality: 0,
     flowSpeed: 0.0,
     flowRotDeg: 0.0,
@@ -340,6 +343,18 @@ class SerialService {
         this.latestTelemetry.rollDeg = parseFloat(attMatch[1]);
         this.latestTelemetry.pitchDeg = parseFloat(attMatch[2]);
         this.latestTelemetry.yawDeg = parseFloat(attMatch[3]);
+      }
+
+      const pidMatch = line.match(/PID:\s*R=\s*([+\-\d.]+)[,\s]+P=\s*([+\-\d.]+)[,\s]+Y=\s*([+\-\d.]+)/i);
+      if (pidMatch) {
+        this.latestTelemetry.outRoll = parseFloat(pidMatch[1]);
+        this.latestTelemetry.outPitch = parseFloat(pidMatch[2]);
+        this.latestTelemetry.outYaw = parseFloat(pidMatch[3]);
+      }
+
+      const flowQMatch = line.match(/Flow:\s*Q=\s*(\d+)/i);
+      if (flowQMatch) {
+        this.latestTelemetry.flowQuality = parseInt(flowQMatch[1], 10);
       }
 
       const flowMatch = line.match(/FLOW\(Q:(\d+),Spd:([\d.]+)\)/);

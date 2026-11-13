@@ -10,6 +10,8 @@ import {
   Layers,
   Cpu,
   Compass,
+  Route,
+  Play,
 } from 'lucide-react';
 import oqabLogo from './assets/oqab-logo.png';
 import { serialService } from './services/serialService';
@@ -24,11 +26,12 @@ import { StateEstimationPanel } from './components/StateEstimationPanel';
 import { ControllerGainsPanel } from './components/ControllerGainsPanel';
 import { SensorsCalibrationPanel } from './components/SensorsCalibrationPanel';
 import { FlowDerotationChart } from './components/FlowDerotationChart';
+import { MissionPlannerPanel } from './components/MissionPlannerPanel';
 
 export const App: React.FC = () => {
   const [status, setStatus] = useState<ConnectionState>('disconnected');
   const [telemetry, setTelemetry] = useState<DroneTelemetry>(serialService.getLatestTelemetry());
-  const [activeTab, setActiveTab] = useState<'overview' | 'sensors' | 'state_est' | 'ctrl_gains' | 'flow' | 'params' | 'terminal'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'mission' | 'sensors' | 'state_est' | 'ctrl_gains' | 'flow' | 'params' | 'terminal'>('overview');
 
   useEffect(() => {
     const unsubStatus = serialService.onStatus(setStatus);
@@ -63,10 +66,12 @@ export const App: React.FC = () => {
     if (telemetry.isArmed) {
       serialService.sendCommand('disarm');
     } else {
-      if (confirm('CAUTION: Are you sure you want to ARM the drone? Motors will spool up!')) {
-        serialService.sendCommand('arm');
-      }
+      serialService.sendCommand('arm');
     }
+  };
+
+  const handleStartMissionToggle = () => {
+    serialService.sendCommand('start');
   };
 
   const handleControllerSwitch = (ctrl: string) => {
@@ -154,14 +159,27 @@ export const App: React.FC = () => {
             disabled={status !== 'connected'}
             className={`px-4 py-1.5 rounded font-bold uppercase tracking-wider flex items-center gap-1.5 transition border cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
               telemetry.isArmed && !isSimMode
-                ? 'bg-red-600 hover:bg-red-700 text-white border-red-600 animate-pulse'
+                ? 'bg-neutral-900 text-red-500 border-red-600 hover:bg-red-950/40'
                 : isSimMode
                 ? 'bg-amber-600/30 text-amber-400 border-amber-500'
                 : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border-neutral-800'
             }`}
           >
             <Flame className="w-3.5 h-3.5 text-red-500" />
-            <span>{telemetry.isArmed ? (isSimMode ? 'SIM RUNNING' : 'DISARM') : 'ARM'}</span>
+            <span>{telemetry.isArmed ? (isSimMode ? 'SIM RUNNING' : 'DISARM') : 'ARM (IDLE)'}</span>
+          </button>
+
+          <button
+            onClick={handleStartMissionToggle}
+            disabled={status !== 'connected'}
+            className={`px-4 py-1.5 rounded font-bold uppercase tracking-wider flex items-center gap-1.5 transition border cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+              telemetry.isAirborne
+                ? 'bg-amber-600 hover:bg-amber-500 text-white border-amber-500 animate-pulse'
+                : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-600 shadow-[0_0_10px_rgba(16,185,129,0.3)]'
+            }`}
+          >
+            <Play className="w-3.5 h-3.5 fill-current" />
+            <span>{telemetry.isAirborne ? 'STOP / LAND' : 'START MISSION'}</span>
           </button>
         </div>
       </header>
@@ -173,6 +191,7 @@ export const App: React.FC = () => {
           <div className="flex flex-wrap gap-1.5 font-mono text-xs">
             {[
               { id: 'overview', label: 'Overview', icon: Activity },
+              { id: 'mission', label: 'Mission Flow', icon: Route },
               { id: 'sensors', label: 'Sensors & Cal', icon: Compass },
               { id: 'state_est', label: 'State Estimation', icon: Layers },
               { id: 'ctrl_gains', label: 'Controller Gains', icon: Cpu },
@@ -232,6 +251,10 @@ export const App: React.FC = () => {
                 roll={telemetry.rollDeg}
                 pitch={telemetry.pitchDeg}
                 yaw={telemetry.yawDeg}
+                outRoll={telemetry.outRoll}
+                outPitch={telemetry.outPitch}
+                outYaw={telemetry.outYaw}
+                isSimMode={isSimMode}
               />
             </div>
             <div className="lg:col-span-5 flex flex-col gap-4">
@@ -307,6 +330,10 @@ export const App: React.FC = () => {
 
         {activeTab === 'sensors' && (
           <SensorsCalibrationPanel telemetry={telemetry} isArmed={telemetry.isArmed} />
+        )}
+
+        {activeTab === 'mission' && (
+          <MissionPlannerPanel />
         )}
 
         {activeTab === 'state_est' && (

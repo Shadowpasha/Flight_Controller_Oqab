@@ -376,21 +376,21 @@ Before the inner attitude loop computes motor commands, Core~1 evaluates airborn
   \node[box, draw=core1bd, fill=core1bg, text width=4.6cm] (idle) at (0, 3.2)
     {\textbf{STAGE\_IDLE}\\Disarmed: $T = 1000\,\mu\text{s}$\\Motors stopped, integrators reset};
   \node[box, draw=core1bd, fill=core1bg, text width=5.6cm] (ramp) at (7.8, 3.2)
-    {\textbf{STAGE\_RAMP\_UP}\\Ground: ramp $+40\,\mu\text{s/s}$ ($\le 1500\,\mu\text{s}$)\\Airborne: latch $T_{\text{hover}}$, climb $z_{\text{sp}}$ @ $18\text{--}25\,\text{cm/s}$};
+    {\textbf{STAGE\_RAMP\_UP}\\Ground: ramp $+70\,\mu\text{s/s}$ ($\le 1600\,\mu\text{s}$)\\Airborne: use $T_{\text{hover}}$ ($1450\,\mu\text{s}$), $z_{\text{sp}} = z_{\text{tgt}}$};
   \node[box, draw=core1bd, fill=core1bg, text width=4.8cm] (hover) at (15.8, 3.2)
-    {\textbf{STAGE\_HOVER}\\Hold $z_{\text{sp}} = 100\,\text{cm}$ for $6\,\text{s}$\\Adaptive $T_{\text{hover}}$ trim $\rightarrow$ NVS};
+    {\textbf{STAGE\_HOVER}\\Hold $z_{\text{sp}} = 100\,\text{cm}$ for $6\,\text{s}$\\Bumpless $T_{\text{hover}}$ learn (\texttt{MPC\_HOVER\_LEARN})};
 
   % Row 2 (y = 0.0)
   \node[box, draw=safebd, fill=safebg, text width=5.4cm] (safe) at (0, 0.0)
-    {\textbf{Safety Disarm / Overrides}\\Tilt $> 40^\circ$ or Watchdog $> 30\,\text{s}$ $\rightarrow$ Disarm\\Ceiling $> 185\,\text{cm}$ ($200\,\text{ms}$) $\rightarrow$ Force LANDING};
+    {\textbf{Safety Disarm / Overrides}\\Tilt $> 40^\circ$ or Watchdog $> 30\,\text{s}$ $\rightarrow$ Disarm\\Ceiling $> 185\,\text{cm}$ ($200\,\text{ms}$) $\rightarrow$ Emergency LAND};
   \node[box, draw=core1bd, fill=core1bg, text width=4.6cm] (touch) at (7.8, 0.0)
     {\textbf{STAGE\_TOUCHDOWN}\\Cut throttle @ $2\times$ land rate\\Down to $1080\,\mu\text{s} \rightarrow$ Disarm};
   \node[box, draw=core1bd, fill=core1bg, text width=4.8cm] (land) at (15.8, 0.0)
-    {\textbf{STAGE\_LANDING}\\Descend $z_{\text{sp}}$ @ $12\,\text{cm/s}$\\Floor: $z_{\text{gnd}} + 2\,\text{cm}$};
+    {\textbf{STAGE\_LANDING}\\Normal: $35\,\mu\text{s/s}$ ($12\,\text{cm/s}$)\\Emergency: $100\,\mu\text{s/s}$ ($40\,\text{cm/s}$)};
 
   % Orthogonal State Transitions
   \draw[arrow] (idle) -- node[lbl, above] {Arm / Takeoff} (ramp);
-  \draw[arrow] (ramp) -- node[lbl, above] {$z \ge z_{\text{tgt}} - 4\,\text{cm}$} (hover);
+  \draw[arrow] (ramp) -- node[lbl, above] {$z \ge z_{\text{tgt}} - 5\,\text{cm}$} (hover);
   \draw[arrow] ([xshift=-0.9cm]hover.south) -- node[lbl, left] {$t \ge 6\,\text{s}$} ([xshift=-0.9cm]land.north);
   \draw[arrow] (land) -- node[lbl, above] {$z \le z_{\text{gnd}} + 4\,\text{cm}$} (touch);
   \draw[arrow] (touch.north) -- ++(0, 0.85) -| node[lbl, pos=0.25, above] {$T \le 1085\,\mu\text{s}$} ([xshift=1.0cm]idle.south);
@@ -406,8 +406,9 @@ Before the inner attitude loop computes motor commands, Core~1 evaluates airborn
 
 \noindent Key operational rules in the mission manager:
 \begin{itemize}
-  \item \textbf{Debounced Airborne Confirmation:} While armed with $T_{\text{base}} \ge 1260\,\mu\text{s}$, liftoff is declared if fused height exceeds $z_{\text{gnd}} + 5\,\text{cm}$ or valid LiDAR exceeds $z_{\text{gnd}} + 4\,\text{cm}$ continuously for $150\,\text{ms}$ (fallback: $T_{\text{base}} \ge 1360\,\mu\text{s}$ sustained for $600\,\text{ms}$). Upon confirmation, open-loop ramping stops and $T_{\text{hover}}$ latches within $[1280, 1420]\,\mu\text{s}$.
-  \item \textbf{In-Flight Hover Thrust Learning:} During \texttt{STAGE\_HOVER}, whenever $|z - z_{\text{tgt}}| < 5\,\text{cm}$ and $|v_z| < 0.12\,\text{m/s}$, $5\%$ per second of \texttt{alt\_throttle\_adj} is bled into $T_{\text{hover}} \in [1150, 1550]\,\mu\text{s}$ and saved to NVS parameter \texttt{MPC\_THR\_HOVER} after $2.0\,\text{s}$ of steady hover.
+  \item \textbf{Debounced Airborne Confirmation:} While armed with $T_{\text{base}} \ge 1260\,\mu\text{s}$, liftoff is declared if fused height exceeds $z_{\text{gnd}} + 5\,\text{cm}$ or valid LiDAR exceeds $z_{\text{gnd}} + 4\,\text{cm}$ continuously for $150\,\text{ms}$ (fallback: $T_{\text{base}} \ge 1480\,\mu\text{s}$ sustained for $600\,\text{ms}$). Upon confirmation, open-loop ramping stops, $T_{\text{hover}}$ keeps the configured \texttt{MPC\_THR\_HOVER} ($1450\,\mu\text{s}$), and \texttt{alt\_throttle\_adj} is seeded with $T_{\text{curr}} - T_{\text{hover}}$ for a bumpless handoff.
+  \item \textbf{In-Flight Hover Thrust Learning (\texttt{MPC\_HOVER\_LEARN}):} When enabled during \texttt{STAGE\_HOVER} and steady ($|z - z_{\text{tgt}}| < 5\,\text{cm}$, $|v_z| < 0.12\,\text{m/s}$), $5\%$ per second of \texttt{alt\_throttle\_adj} is accumulated in a float and transferred bumplessly from $I_{vz}$ into $T_{\text{hover}} \in [1150, 1700]\,\mu\text{s}$, saving to NVS \texttt{MPC\_THR\_HOVER} after $2.0\,\text{s}$.
+  \item \textbf{Separate Normal \& Emergency Descent:} Normal landings (\texttt{land} or hover completion) descend at \texttt{MPC\_RAMP\_DN} ($35\,\mu\text{s/s}$, $12\,\text{cm/s}$). Toggling \texttt{start} in flight, \texttt{stop}, or ceiling intervention triggers an emergency descent at \texttt{MPC\_RAMP\_EMG} ($100\,\mu\text{s/s}$, $40\,\text{cm/s}$).
   \item \textbf{Closed-Loop Activation \& Anti-Windup:} Attitude controllers stay reset while $T_{\text{base}} < 1200\,\mu\text{s}$ (\texttt{PID\_ACTIVE\_THROTTLE}). Integral and ESO disturbance terms only accumulate when \texttt{run\_iterm = sim\_mode || is\_airborne}.
 \end{itemize}
 
@@ -423,13 +424,13 @@ Figure~\ref{fig:cascade_overview} shows the full cascaded control hierarchy conn
 \begin{tikzpicture}[node distance=5mm and 6mm]
   % Horizontal Position Cascade (Top branch)
   \node[sum] (sum_pos) {$\Sigma$};
-  \node[controller, right=of sum_pos] (pos_p) {\textbf{XY Pos P}\\$K_{p,xy}=1.2$\\$\pm 1.5\,\text{m/s}$};
+  \node[controller, right=of sum_pos] (pos_p) {\textbf{XY Pos P}\\$K_{p,xy}=0.60$\\$\pm 0.60\,\text{m/s}$};
   \node[sum, right=of pos_p] (sum_vel) {$\Sigma$};
-  \node[controller, right=of sum_vel] (vel_pid) {\textbf{XY Vel PID}\\$K_p=3.5, K_i=1.0, K_d=0.15$\\$\pm 12^\circ$ max tilt};
+  \node[controller, right=of sum_vel] (vel_pid) {\textbf{XY Vel PID}\\$K_p=1.50, K_i=0.25, K_d=0.08$\\$\pm 4^\circ$ max tilt};
 
   % Vertical Altitude Cascade (Bottom branch)
   \node[sum, below=22mm of sum_pos] (sum_z) {$\Sigma$};
-  \node[controller, right=of sum_z] (z_p) {\textbf{Z Pos P}\\$K_{p,z}=1.0$\\$[-0.45, +0.25]\,\text{m/s}$};
+  \node[controller, right=of sum_z] (z_p) {\textbf{Z Pos P}\\$K_{p,z}=1.0$\\$[-0.35, +0.18]\,\text{m/s}$};
   \node[sum, right=of z_p] (sum_vz) {$\Sigma$};
   \node[controller, right=of sum_vz] (vz_pid) {\textbf{Z Vel PID + Comp}\\Asym $K_{pv}, K_{iv}, K_{dv}$\\Tilt boost, $[-260,+80]\,\mu\text{s}$\\Slew $+50 / -400\,\mu\text{s/s}$};
 
@@ -502,18 +503,18 @@ Implemented in \texttt{computePositionControl()} when position hold is active an
     \begin{bmatrix} \cos\psi_{\text{abs}} & \sin\psi_{\text{abs}} \\ -\sin\psi_{\text{abs}} & \cos\psi_{\text{abs}} \end{bmatrix}
     \begin{bmatrix} p_{N,\text{sp}} - p_N \\ p_{E,\text{sp}} - p_E \end{bmatrix}.
   \end{equation}
-  \item \textbf{Outer Position P Loop:} Desired body velocities are $v_{\text{sp}} = \operatorname{clamp}(K_{p,xy} e, -v_{\max}, v_{\max})$ with $K_{p,xy} = 1.2\,\text{s}^{-1}$ and $v_{\max} = 1.5\,\text{m/s}$.
-  \item \textbf{Inner Velocity PID Loop:} Velocity errors $e_v = v_{\text{sp}} - v$ drive desired tilt angles (positive pitch nose-down accelerates forward; positive roll right-wing-down accelerates right):
+  \item \textbf{Outer Position P Loop:} Desired body velocities are $v_{\text{sp}} = \operatorname{clamp}(K_{p,xy} e, -v_{\max}, v_{\max})$ with $K_{p,xy} = 0.60\,\text{s}^{-1}$ and $v_{\max} = 0.60\,\text{m/s}$ (active when airborne and $z \ge z_{\text{gnd}} + 9\,\text{cm}$).
+  \item \textbf{Inner Velocity PID Loop:} Velocity errors $e_v = v_{\text{sp}} - v$ drive desired tilt angles directly in degrees (positive pitch nose-down accelerates forward; positive roll right-wing-down accelerates right):
   \begin{equation}
     \theta_{\text{sp}} = \operatorname{clamp}\!\left(K_{p,v} e_{v,\text{fwd}} + I_{\text{fwd}} - K_{d,v} \dot{v}_{\text{fwd}},\; -\theta_{\max},\; \theta_{\max}\right),
   \end{equation}
-  with $K_{p,v} = 3.5^\circ/(\text{m/s})$, $K_{i,v} = 1.0^\circ/\text{m}$ (clamped at $\pm 7.0^\circ$), $K_{d,v} = 0.15$ (derivative clamped $\pm 3.0^\circ$), and $\theta_{\max} = 12.0^\circ$. An identical law computes $\phi_{\text{sp}}$ on the Right axis.
+  with $K_{p,v} = 1.50^\circ/(\text{m/s})$, $K_{i,v} = 0.25^\circ/\text{m}$ (clamped at $\pm 1.5^\circ$), $K_{d,v} = 0.08$ (derivative clamped $\pm 2.0^\circ$), and $\theta_{\max} = 4.0^\circ$. An identical law computes $\phi_{\text{sp}}$ on the Right axis.
 \end{enumerate}
 
 \subsection{Outer Vertical Altitude Cascade (50~Hz)}
 Implemented in \texttt{computeAltitudeControl()}:
 \begin{enumerate}
-  \item \textbf{Outer Z Position P Loop:} $v_{z,\text{sp}} = \operatorname{clamp}(K_{p,z}(z_{\text{sp}} - z), -v_{\text{desc},\max}, v_{\text{climb},\max})$ with $K_{p,z} = 1.0\,\text{s}^{-1}$, $v_{\text{climb},\max} = 0.25\,\text{m/s}$, and $v_{\text{desc},\max} = 0.45\,\text{m/s}$.
+  \item \textbf{Outer Z Position P Loop:} $v_{z,\text{sp}} = \operatorname{clamp}(K_{p,z}(z_{\text{sp}} - z), -v_{\text{desc},\max}, v_{\text{climb},\max})$ with $K_{p,z} = 1.0\,\text{s}^{-1}$, $v_{\text{climb},\max} = 0.18\,\text{m/s}$, and $v_{\text{desc},\max} = 0.35\,\text{m/s}$. The acceleration-to-PWM scale factor uses the nominal hover baseline $T_{\text{hover}} - 1000$ rather than $T_{\text{base}} - 1000$.
   \item \textbf{Inner Z Velocity PID with Asymmetric Gains:} Using $e_{vz} = v_{z,\text{sp}} - v_z$:
   \begin{align}
     a_{z,\text{sp}} &= K_{p,\text{eff}}\, e_{vz} + I_{vz} - K_{d,vz}\frac{v_{z,k} - v_{z,k-1}}{\Delta t}, \\

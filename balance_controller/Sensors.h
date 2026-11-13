@@ -7,7 +7,7 @@
 #include "libraries/Adafruit_Sensor.h"
 #include "libraries/Adafruit_QMC5883P.h"
 #include "libraries/ESP32_SharpIR.h"
-#include "libraries/TinyGPS++.h"
+#include "libraries/TinyGPS.h"
 #include "Config.h"
 
 // =============================================================================

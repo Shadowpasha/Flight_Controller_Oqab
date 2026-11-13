@@ -5,6 +5,7 @@
 #include "Controllers.h"
 #include "Motors.h"
 #include "Parameters.h"
+#include "MissionSystem.h"
 
 BluetoothSerial SerialBT;
 
@@ -223,14 +224,16 @@ void processCommand(const char* cmd_raw) {
 
   } else if (str.equalsIgnoreCase("arm") || str.equalsIgnoreCase("am")) {
     if (flightMgr.is_armed) {
-      disarm("Arm toggle stopped");
+      disarm("Arm toggle disarmed");
     } else {
+      int idle_pwm = (flightMgr.min_armed_throttle_us >= 1000) ? flightMgr.min_armed_throttle_us : MIN_ARMED_PWM;
       flightMgr.is_armed            = true;
-      flightMgr.flight_stage        = STAGE_RAMP_UP;
-      flightMgr.current_throttle_us = MIN_ARMED_PWM;
-      flightMgr.base_throttle_us    = MIN_ARMED_PWM;
-      flightMgr.target_throttle_us  = flightMgr.takeoff_throttle_target;
-      altControl.active_height_sp_cm = droneState.ground_height_cm; // Start at ground clearance; ascends smoothly at 15 cm/s
+      flightMgr.is_emergency_landing = false;
+      flightMgr.flight_stage        = STAGE_IDLE; // Arm strictly in IDLE mode (does not start climb/mission)
+      flightMgr.current_throttle_us = (float)idle_pwm;
+      flightMgr.base_throttle_us    = idle_pwm;
+      flightMgr.target_throttle_us  = idle_pwm;
+      altControl.active_height_sp_cm = droneState.ground_height_cm;
       resetPositionControl();
       resetAltitudeControl();
       getActiveController()->reset();
@@ -243,16 +246,66 @@ void processCommand(const char* cmd_raw) {
         dualPrintln("--> GPS: No solid fix yet. Home set to current physical arming position.");
       }
 
-      dualPrintln("--> ARMED! Controller: " + String(getActiveControllerName()) +
-                  " | Mode: " + String(getFlightModeName()) +
-                  " | Target Height: " + String(altControl.target_height_cm, 1) + "cm");
+      dualPrintln("--> ARMED AT IDLE (" + String(idle_pwm) + "us). Ready for takeoff / mission start.");
+      dualPrintln("    Controller: " + String(getActiveControllerName()) + " | Mode: " + String(getFlightModeName()));
     }
 
-  } else if (str.equalsIgnoreCase("disarm") || str.equalsIgnoreCase("s")) {
-    disarm("User command");
+  } else if (str.equalsIgnoreCase("start")) {
+    // If not armed, arm first at idle, then start climb/mission
+    if (!flightMgr.is_armed) {
+      int idle_pwm = (flightMgr.min_armed_throttle_us >= 1000) ? flightMgr.min_armed_throttle_us : MIN_ARMED_PWM;
+      flightMgr.is_armed            = true;
+      flightMgr.is_emergency_landing = false;
+      flightMgr.current_throttle_us = (float)idle_pwm;
+      flightMgr.base_throttle_us    = idle_pwm;
+      altControl.active_height_sp_cm = droneState.ground_height_cm;
+      resetPositionControl();
+      resetAltitudeControl();
+      getActiveController()->reset();
+      resetEstimatorStates();
+      setHomeToArmPoint();
+      dualPrintln("--> Auto-Armed at " + String(idle_pwm) + "us for START command.");
+    }
+
+    // If currently running in flight or mission: second 'start' triggers emergency fast landing or cut
+    if (flightMgr.flight_stage == STAGE_RAMP_UP || flightMgr.flight_stage == STAGE_HOVER || missionSys.isActive()) {
+      if (flightMgr.stop_triggers_land) {
+        flightMgr.flight_stage         = STAGE_LANDING;
+        flightMgr.is_emergency_landing = true;
+        altControl.active_height_sp_cm = droneState.current_height_cm;
+        flightMgr.target_throttle_us   = flightMgr.land_throttle_target;
+        missionSys.stop("Start toggled to emergency landing");
+        dualPrintln("--> START TOGGLED: Emergency fast descent initiated (" +
+                    String(flightMgr.emerg_land_ramp_rate, 0) + " us/s)...");
+      } else {
+        disarm("Start toggled to direct motor cut");
+      }
+    } else {
+      // In IDLE: begin climb ramp and start mission sequence
+      flightMgr.is_emergency_landing = false;
+      flightMgr.flight_stage       = STAGE_RAMP_UP;
+      flightMgr.target_throttle_us = flightMgr.takeoff_throttle_target;
+      altControl.active_height_sp_cm = droneState.ground_height_cm;
+      missionSys.start();
+      dualPrintln("--> START: Climbing to hover & executing mission sequence!");
+    }
+
+  } else if (str.equalsIgnoreCase("disarm") || str.equalsIgnoreCase("s") || str.equalsIgnoreCase("stop")) {
+    if (str.equalsIgnoreCase("stop") && flightMgr.stop_triggers_land && flightMgr.is_armed && !flightMgr.sim_mode) {
+      flightMgr.flight_stage         = STAGE_LANDING;
+      flightMgr.is_emergency_landing = true;
+      altControl.active_height_sp_cm = droneState.current_height_cm;
+      flightMgr.target_throttle_us   = flightMgr.land_throttle_target;
+      missionSys.stop("Stop command triggered emergency landing");
+      dualPrintln("--> STOP command: Emergency landing initiated (" +
+                  String(flightMgr.emerg_land_ramp_rate, 0) + " us/s, MIS_STOP_LAND=1)...");
+    } else {
+      disarm("User command / stop");
+    }
 
   } else if (str.equalsIgnoreCase("idle")) {
     flightMgr.is_armed            = true;
+    flightMgr.is_emergency_landing = false;
     flightMgr.flight_stage        = STAGE_IDLE;
     flightMgr.current_throttle_us = MIN_ARMED_PWM;
     flightMgr.base_throttle_us    = MIN_ARMED_PWM;
@@ -265,25 +318,27 @@ void processCommand(const char* cmd_raw) {
   } else if (str.equalsIgnoreCase("land")) {
     if (flightMgr.is_armed && !flightMgr.sim_mode) {
       flightMgr.flight_stage         = STAGE_LANDING;
+      flightMgr.is_emergency_landing = false;
       altControl.active_height_sp_cm = droneState.current_height_cm;
       flightMgr.target_throttle_us   = flightMgr.land_throttle_target;
-      dualPrintln("--> LAND command: Initiating smooth controlled descent...");
+      dualPrintln("--> LAND command: Initiating smooth controlled descent (" +
+                  String(flightMgr.land_ramp_rate, 0) + " us/s)...");
     }
 
-  // --- 3. FLIGHT MODE (CASCADE, ANGLE, RATE) & CONTROLLER ALIASES ---
+  // --- 3. FLIGHT MODE (POS_HOLD, ALT_HOLD, MANUAL) & CONTROLLER ALIASES ---
   } else if (str.startsWith("mode ") || str.startsWith("m ")) {
     String mStr = str.substring(str.indexOf(' ') + 1);
     mStr.trim();
-    if (mStr.equalsIgnoreCase("cascade") || mStr == "0") {
-      flightMgr.current_mode = MODE_CASCADE;
+    if (mStr.equalsIgnoreCase("pos") || mStr.equalsIgnoreCase("pos_hold") || mStr.equalsIgnoreCase("position") || mStr == "0") {
+      flightMgr.current_mode = MODE_POS_HOLD;
       getActiveController()->reset();
       dualPrintln("--> Flight Mode switched to: " + String(getFlightModeName()));
-    } else if (mStr.equalsIgnoreCase("angle") || mStr == "1") {
-      flightMgr.current_mode = MODE_ANGLE;
+    } else if (mStr.equalsIgnoreCase("alt") || mStr.equalsIgnoreCase("alt_hold") || mStr.equalsIgnoreCase("altitude") || mStr == "1") {
+      flightMgr.current_mode = MODE_ALT_HOLD;
       getActiveController()->reset();
       dualPrintln("--> Flight Mode switched to: " + String(getFlightModeName()));
-    } else if (mStr.equalsIgnoreCase("rate") || mStr == "2") {
-      flightMgr.current_mode = MODE_RATE;
+    } else if (mStr.equalsIgnoreCase("man") || mStr.equalsIgnoreCase("manual") || mStr == "2") {
+      flightMgr.current_mode = MODE_MANUAL;
       getActiveController()->reset();
       dualPrintln("--> Flight Mode switched to: " + String(getFlightModeName()));
     } else if (mStr.equalsIgnoreCase("mdbci")) {
@@ -308,10 +363,55 @@ void processCommand(const char* cmd_raw) {
       selectController(CONTROLLER_PID);
       dualPrintln("--> Controller switched to: PID");
     } else {
-      dualPrintln("Usage: mode <cascade|angle|rate> or ctrl <pid|smc|adrc|mdbci|mdbcis|cdi|cvi|noi|viabc>");
+      dualPrintln("Usage: mode <pos_hold|alt_hold|manual> or ctrl <pid|smc|adrc|mdbci|mdbcis|cdi|cvi|noi|viabc>");
     }
 
-  // --- 4. ALTITUDE & MISSION SETPOINTS ---
+  // --- 4. ALTITUDE & MISSION SETPOINTS & MISSION COMMANDS ---
+  } else if (str.equalsIgnoreCase("mission start") || str.equalsIgnoreCase("mis start")) {
+    missionSys.start();
+  } else if (str.equalsIgnoreCase("mission stop") || str.equalsIgnoreCase("mis stop")) {
+    missionSys.stop("Manual mission stop command");
+  } else if (str.equalsIgnoreCase("mission clear") || str.equalsIgnoreCase("mis clear")) {
+    missionSys.clear();
+    dualPrintln("--> Mission cleared.");
+  } else if (str.equalsIgnoreCase("mission default") || str.equalsIgnoreCase("mis default") || str.equalsIgnoreCase("mis def")) {
+    missionSys.loadDefaultMission();
+    dualPrintln("--> Default mission loaded (Takeoff -> (0,0) -> Hover -> Land).");
+    missionSys.printMission();
+  } else if (str.equalsIgnoreCase("mission show") || str.equalsIgnoreCase("mission list") || str.equalsIgnoreCase("mis show") || str.equalsIgnoreCase("mis")) {
+    missionSys.printMission();
+  } else if (str.startsWith("mission add ") || str.startsWith("mis add ")) {
+    String sub = str.substring(str.startsWith("mission add ") ? 12 : 8);
+    sub.trim();
+    char typeBuf[16];
+    float p1 = 0, p2 = 0, p3 = 0, p4 = 0;
+    int parsed = sscanf(sub.c_str(), "%15s %f %f %f %f", typeBuf, &p1, &p2, &p3, &p4);
+    String typeStr = String(typeBuf);
+    typeStr.toUpperCase();
+
+    MissionCmdType cmdType;
+    bool valid = true;
+    if (typeStr == "TAKEOFF") {
+      cmdType = MISSION_CMD_TAKEOFF;
+    } else if (typeStr == "WAYPOINT" || typeStr == "WP") {
+      cmdType = MISSION_CMD_WAYPOINT;
+    } else if (typeStr == "DELAY" || typeStr == "HOVER") {
+      cmdType = MISSION_CMD_DELAY;
+    } else if (typeStr == "LAND") {
+      cmdType = MISSION_CMD_LAND;
+    } else {
+      valid = false;
+      dualPrintln("ERR: Unknown mission cmd '" + typeStr + "'. Use TAKEOFF, WAYPOINT, DELAY, LAND");
+    }
+
+    if (valid) {
+      if (missionSys.addItem(cmdType, p1, p2, p3, p4)) {
+        dualPrintln("--> Mission step added (" + typeStr + "). Total items: " + String(missionSys.getItemCount()));
+      } else {
+        dualPrintln("ERR: Mission list full (max " + String(MAX_MISSION_ITEMS) + " items).");
+      }
+    }
+
   } else if (str.startsWith("alt ") || str.startsWith("height ") || str.startsWith("h ")) {
     float h = str.substring(str.indexOf(' ') + 1).toFloat();
     if (h >= 15.0f && h <= 500.0f) {
@@ -396,6 +496,14 @@ void processCommand(const char* cmd_raw) {
     int val = str.substring(str.indexOf(' ') + 1).toInt();
     setParameter("MPC_ALT_HOLD", (float)val, true);
     dualPrintln("Altitude Hold: " + String(altControl.alt_hold_enabled ? "ENABLED" : "DISABLED") + " (Saved to Flash)");
+
+  } else if (str.equalsIgnoreCase("hover learn on") || str.equalsIgnoreCase("auto hover on")) {
+    setParameter("MPC_HOVER_LEARN", 1.0f, true);
+    dualPrintln("Auto Hover Learning: ENABLED (Saved to Flash)");
+
+  } else if (str.equalsIgnoreCase("hover learn off") || str.equalsIgnoreCase("auto hover off")) {
+    setParameter("MPC_HOVER_LEARN", 0.0f, true);
+    dualPrintln("Auto Hover Learning: DISABLED (Saved to Flash)");
 
   } else if (str.startsWith("pid_alt ")) {
     float p_pos = 0, p_vel = 0, i_vel = 0, d_vel = 0;
@@ -940,7 +1048,7 @@ void sendTelemetry(bool is_armed, bool sim_mode, FlightStage stage, FlightMode m
   const char* alt_tag = (droneState.active_alt_source == ALT_SOURCE_LIDAR) ? "LID" :
                         ((droneState.active_alt_source == ALT_SOURCE_SHARP) ? "SHP" : "BAR");
   const char* ctrl_tag = getActiveControllerName();
-  const char* mode_tag = (mode == MODE_CASCADE) ? "CAS" : ((mode == MODE_ANGLE) ? "ANG" : "RAT");
+  const char* mode_tag = (mode == MODE_POS_HOLD) ? "POS" : ((mode == MODE_ALT_HOLD) ? "ALT" : "MAN");
   const char* home_tag = getHomeOriginTypeName(); // "BOOT" or "ARM"
 
   // Flight stage / armed label
@@ -982,9 +1090,9 @@ void sendTelemetry(bool is_armed, bool sim_mode, FlightStage stage, FlightMode m
   }
 
   // Structured Dead Reckoning telemetry line:
-  // [DEAD-RECKONING] Home:%s | Dist: 2D=%5.2fm, 3D=%5.2fm | Pos: X=%+6.2fm, Y=%+6.2fm, Z=%+5.2fm(%3.0fcm) | Vel: Vx=%+5.2fm/s, Vy=%+5.2fm/s, Vz=%+5.2fm/s (Spd:%.2f) | Att: R=%+5.1f, P=%+5.1f, Y=%+5.1f | Acc: GPS[%s] Raw:(%+.2f,%+.2f)m Alt:%s[LIDAR:%.1f]cm | %s [%s|%s]
+  // [DEAD-RECKONING] Home:%s | Dist: 2D=%5.2fm, 3D=%5.2fm | Pos: X=%+6.2fm, Y=%+6.2fm, Z=%+5.2fm(%3.0fcm) | Vel: Vx=%+5.2fm/s, Vy=%+5.2fm/s, Vz=%+5.2fm/s (Spd:%.2f) | Att: R=%+5.1f, P=%+5.1f, Y=%+5.1f | PID: R=%+5.1f, P=%+5.1f, Y=%+5.1f | Flow: Q=%3d | Acc: GPS[%s] Alt:%s[LIDAR:%.1f]cm | %s [%s|%s]
   snprintf(t_buf, sizeof(t_buf),
-           "[DEAD-RECKONING] Home:%s | Dist: 2D=%5.2fm, 3D=%5.2fm | Pos: X=%+6.2fm, Y=%+6.2fm, Z=%+5.2fm(%3.0fcm) | Vel: Vx=%+5.2fm/s, Vy=%+5.2fm/s, Vz=%+5.2fm/s (Spd:%.2f) | Att: R=%+5.1f, P=%+5.1f, Y=%+5.1f | Acc: GPS[%s] Raw:(%+.2f,%+.2f)m Alt:%s[LIDAR:%.1f]cm | %s [%s|%s]",
+           "[DEAD-RECKONING] Home:%s | Dist: 2D=%5.2fm, 3D=%5.2fm | Pos: X=%+6.2fm, Y=%+6.2fm, Z=%+5.2fm(%3.0fcm) | Vel: Vx=%+5.2fm/s, Vy=%+5.2fm/s, Vz=%+5.2fm/s (Spd:%.2f) | Att: R=%+5.1f, P=%+5.1f, Y=%+5.1f | PID: R=%+5.1f, P=%+5.1f, Y=%+5.1f | Flow: Q=%3d | Acc: GPS[%s] Alt:%s[LIDAR:%.1f]cm | %s [%s|%s]",
            home_tag,
            droneState.dist_from_home_2d_m,
            droneState.dist_from_home_3d_m,
@@ -999,9 +1107,11 @@ void sendTelemetry(bool is_armed, bool sim_mode, FlightStage stage, FlightMode m
            droneState.roll_deg,
            droneState.pitch_deg,
            droneState.yaw_deg,
+           out_roll,
+           out_pitch,
+           out_yaw,
+           (int)droneState.flow_quality,
            gps_str,
-           droneState.raw_pos_north_m,
-           droneState.raw_pos_east_m,
            alt_tag,
            droneState.raw_height_cm,
            state_tag,

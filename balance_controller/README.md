@@ -14,14 +14,17 @@ ESP32-based modular flight controller for multirotor UAVs and quadcopters (Quad-
   * **CDI / CVI / NOI**: Conditional, Conventional, and No-Integration Backstepping variants.
 * **Sensor Suite**:
   * **IMU**: MPU6050 (6-DOF Accelerometer + Gyroscope) at 250 Hz.
-  * **Barometer**: BMP180 via I2C bypass.
-  * **Compass / Magnetometer**: GY-87 (QMC5883P / HMC5883L).
-  * **Altitude**: Sharp GP2Y0A IR Rangefinder (Pin 34) + BMP180 hybrid 3-state Kalman filter.
-  * **GPS**: NEO-6M / NEO-7M / NEO-M8N / BN-220 via TinyGPS++ at 9600 baud (UART2: RX=16, TX=17).
-* **Communications & Telemetry**:
+  * **Optical Flow & ToF LiDAR**: Mateksys 3901-L0X / 3901-L1X via MSPv2 on UART2 (RX=16, TX=17 @ 115200 baud) for gyro-derotated horizontal velocity and primary altitude estimation.
+  * **Barometer & Compass**: BMP180 / GY-87 (QMC5883P / HMC5883L) via I2C.
+  * **GPS (Optional)**: NEO-6M / NEO-7M / NEO-M8N / BN-220 via TinyGPS++ on UART2.
+* **PX4-Style Outer Control & Flight Management**:
+  * **Altitude & Hover**: 50 Hz Z position P -> velocity PID (`MPC_Z_CLIMB = 0.18 m/s`, `MPC_Z_DESC = 0.35 m/s`), bumpless liftoff handoff (`MPC_THR_HOVER = 1450 us`, `TAKEOFF_THROTTLE = 1480 us`), and toggleable in-flight hover learning (`MPC_HOVER_LEARN`).
+  * **Separate Descent Rates**: Normal landing (`land` / hover timeout) at `MPC_RAMP_DN = 35 us/s` (12 cm/s) and emergency fast landing (`start` toggle in flight / `stop` / ceiling guard) at `MPC_RAMP_EMG = 100 us/s` (40 cm/s).
+  * **Gentle F330 Position Hold**: Optical flow position hold activates once airborne above `POS_HOLD_MIN_AGL_CM` (9.0 cm over ground) with gentle F330 defaults (`MPC_XY_P = 0.60`, `MPC_XY_VEL_P = 1.50`, `MPC_XY_MAX_TILT = 4.0 deg`).
+* **Communications, Telemetry & Dashboard**:
   * **USB Serial & Classic Bluetooth SPP** (`BluetoothSerial`, device name: `Oqab_Flight_Controller`).
-  * Live dead-reckoning telemetry stream with structured status flags.
-  * Interactive CLI for runtime tuning, arming/disarming, mode switching, and parameter management.
+  * Live dead-reckoning telemetry stream and interactive CLI for runtime tuning, arming, mode switching, and Flash NVS parameter management.
+  * Companion **Tauri/React Dashboard** in `dashboard/` for 3D attitude visualization, live telemetry charting, and flow derotation inspection.
 
 ## 🔌 Pin Configuration
 
@@ -63,8 +66,12 @@ balance_controller/
 4. Open the Serial Monitor (or connect via Bluetooth Terminal) at **115200 baud**.
 5. Available CLI commands:
    * `arm` / `disarm` - Motor control toggle
+   * `start` - Arm & begin autonomous takeoff/hover/land mission; send `start` again in flight for emergency fast landing (`MPC_RAMP_EMG`, 100 us/s)
+   * `land` / `stop` - Normal controlled descent (`MPC_RAMP_DN`, 35 us/s) vs emergency landing (`stop`)
+   * `hover learn <on|off>` - Enable or disable automatic hover throttle learning (`MPC_HOVER_LEARN`)
    * `ctrl <pid|smc|adrc|mdbci|mdbcis|viabc>` - Switch active attitude controller
-   * `gps` - View live GPS satellite and communication status
-   * `gps <on|off|toggle>` - Enable or completely disable GPS subsystem (saved to Flash parameter `SYS_USE_GPS`)
+   * `flow <on|off|toggle>` / `gps <on|off|toggle>` - Enable or disable Optical Flow / GPS subsystems (saved to Flash)
    * `status` - Full flight controller health report
-   * `param show` - Display stored tuning parameters
+   * `param show` / `param set <NAME> <VAL>` / `param reset` - Inspect, update, or reset Flash NVS parameters
+
+See [docs/oqab_control_estimation_architecture.tex](../docs/oqab_control_estimation_architecture.tex) for the full mathematical model, state machine, and estimator equations.

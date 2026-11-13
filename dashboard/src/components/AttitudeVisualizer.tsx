@@ -5,11 +5,27 @@ interface AttitudeProps {
   roll: number;
   pitch: number;
   yaw: number;
+  outRoll?: number;
+  outPitch?: number;
+  outYaw?: number;
+  isSimMode?: boolean;
 }
 
-export const AttitudeVisualizer: React.FC<AttitudeProps> = ({ roll, pitch, yaw }) => {
+export const AttitudeVisualizer: React.FC<AttitudeProps> = ({
+  roll,
+  pitch,
+  yaw,
+  outRoll = 0,
+  outPitch = 0,
+  outYaw = 0,
+  isSimMode = false,
+}) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const droneGroupRef = useRef<THREE.Group | null>(null);
+  const arrowsGroupRef = useRef<THREE.Group | null>(null);
+  const rollArrowRef = useRef<THREE.ArrowHelper | null>(null);
+  const pitchArrowRef = useRef<THREE.ArrowHelper | null>(null);
+  const motorArrowsRef = useRef<THREE.ArrowHelper[]>([]);
 
   useEffect(() => {
     const container = mountRef.current;
@@ -109,10 +125,10 @@ export const AttitudeVisualizer: React.FC<AttitudeProps> = ({ roll, pitch, yaw }
     });
 
     const motorPositions = [
-      { x: 0.46, z: -0.46, isFront: true },  // Front-Right
-      { x: -0.46, z: -0.46, isFront: true }, // Front-Left
-      { x: 0.46, z: 0.46, isFront: false },  // Rear-Right
-      { x: -0.46, z: 0.46, isFront: false }, // Rear-Left
+      { id: 1, x:  0.46, z: -0.46, isFront: true  }, // M1: Front-Right
+      { id: 2, x:  0.46, z:  0.46, isFront: false }, // M2: Rear-Right
+      { id: 3, x: -0.46, z:  0.46, isFront: false }, // M3: Rear-Left
+      { id: 4, x: -0.46, z: -0.46, isFront: true  }, // M4: Front-Left
     ];
 
     const props: THREE.Mesh[] = [];
@@ -127,6 +143,51 @@ export const AttitudeVisualizer: React.FC<AttitudeProps> = ({ roll, pitch, yaw }
       droneGroup.add(prop);
       props.push(prop);
     });
+
+    // --- Dynamic PID Correction Torque Arrows Group ---
+    const arrowsGroup = new THREE.Group();
+    droneGroup.add(arrowsGroup);
+    arrowsGroupRef.current = arrowsGroup;
+
+    // Pitch Correction Arrow (along body Z-axis: forward/backward torque)
+    const pitchArrow = new THREE.ArrowHelper(
+      new THREE.Vector3(0, 0, -1),
+      new THREE.Vector3(0, 0.25, 0),
+      0.001,
+      0x38bdf8, // Sky Blue for pitch
+      0.15,
+      0.08
+    );
+    arrowsGroup.add(pitchArrow);
+    pitchArrowRef.current = pitchArrow;
+
+    // Roll Correction Arrow (along body X-axis: right/left torque)
+    const rollArrow = new THREE.ArrowHelper(
+      new THREE.Vector3(1, 0, 0),
+      new THREE.Vector3(0, 0.25, 0),
+      0.001,
+      0xf59e0b, // Amber for roll
+      0.15,
+      0.08
+    );
+    arrowsGroup.add(rollArrow);
+    rollArrowRef.current = rollArrow;
+
+    // Per-motor vertical thrust delta arrows (M1: FR, M2: RR, M3: RL, M4: FL)
+    const motorArrows: THREE.ArrowHelper[] = [];
+    motorPositions.forEach((pos) => {
+      const mArrow = new THREE.ArrowHelper(
+        new THREE.Vector3(0, 1, 0),
+        new THREE.Vector3(pos.x, 0.20, pos.z),
+        0.001,
+        0x22c55e,
+        0.12,
+        0.06
+      );
+      arrowsGroup.add(mArrow);
+      motorArrows.push(mArrow);
+    });
+    motorArrowsRef.current = motorArrows;
 
     let animationId: number;
     const animate = () => {
@@ -167,6 +228,67 @@ export const AttitudeVisualizer: React.FC<AttitudeProps> = ({ roll, pitch, yaw }
     droneGroupRef.current.rotation.set(-pitch * deg2rad, yaw * deg2rad, -roll * deg2rad, 'YXZ');
   }, [roll, pitch, yaw]);
 
+  // Update dynamic PID correction arrows
+  useEffect(() => {
+    const maxPid = 250.0;
+    const maxArrowLen = 1.3;
+
+    // Pitch torque arrow: positive pitch output commands nose down (forward acceleration / thrust from rear)
+    // Three.js body frame: Forward is -Z, Right is +X, Up is +Y
+    if (pitchArrowRef.current) {
+      const magP = Math.min(Math.abs(outPitch) / maxPid, 1.0) * maxArrowLen;
+      if (magP > 0.05) {
+        pitchArrowRef.current.visible = true;
+        // outPitch > 0 -> pitch nose down (forward push, vector along -Z); outPitch < 0 -> pitch nose up (vector along +Z)
+        const dirZ = outPitch > 0 ? -1 : 1;
+        pitchArrowRef.current.setDirection(new THREE.Vector3(0, 0, dirZ));
+        pitchArrowRef.current.setLength(magP, Math.min(0.18, magP * 0.4), Math.min(0.09, magP * 0.25));
+      } else {
+        pitchArrowRef.current.visible = false;
+      }
+    }
+
+    // Roll torque arrow: outRoll > 0 -> roll right down (push rightwards, vector along +X)
+    if (rollArrowRef.current) {
+      const magR = Math.min(Math.abs(outRoll) / maxPid, 1.0) * maxArrowLen;
+      if (magR > 0.05) {
+        rollArrowRef.current.visible = true;
+        const dirX = outRoll > 0 ? 1 : -1;
+        rollArrowRef.current.setDirection(new THREE.Vector3(dirX, 0, 0));
+        rollArrowRef.current.setLength(magR, Math.min(0.18, magR * 0.4), Math.min(0.09, magR * 0.25));
+      } else {
+        rollArrowRef.current.visible = false;
+      }
+    }
+
+    // Per-motor thrust delta arrows (Quad-X mixer):
+    // M1 Front-Right (x: +0.46, z: -0.46): -out_roll - out_pitch
+    // M2 Rear-Right  (x: +0.46, z: +0.46): -out_roll + out_pitch
+    // M3 Rear-Left   (x: -0.46, z: +0.46): +out_roll + out_pitch
+    // M4 Front-Left  (x: -0.46, z: -0.46): +out_roll - out_pitch
+    const motorDeltas = [
+      -outRoll - outPitch, // M1 FR
+      -outRoll + outPitch, // M2 RR
+      +outRoll + outPitch, // M3 RL
+      +outRoll - outPitch, // M4 FL
+    ];
+
+    motorArrowsRef.current.forEach((mArrow, idx) => {
+      const delta = motorDeltas[idx] ?? 0;
+      const mag = Math.min(Math.abs(delta) / 200.0, 1.0) * 0.9;
+      if (mag > 0.04) {
+        mArrow.visible = true;
+        // delta > 0: motor speeding up (thrust pushing UP); delta < 0: motor slowing down
+        const dirY = delta >= 0 ? 1 : -1;
+        mArrow.setDirection(new THREE.Vector3(0, dirY, 0));
+        mArrow.setLength(mag, Math.min(0.12, mag * 0.35), Math.min(0.06, mag * 0.2));
+        mArrow.setColor(new THREE.Color(delta >= 0 ? 0x22c55e : 0xef4444));
+      } else {
+        mArrow.visible = false;
+      }
+    });
+  }, [outRoll, outPitch, outYaw]);
+
   return (
     <div className="relative w-full h-full min-h-[340px] rounded-lg overflow-hidden bg-[#0a0a0a] border border-neutral-800 flex flex-col">
       <div className="absolute top-3 left-4 z-10 flex items-center gap-2">
@@ -206,6 +328,19 @@ export const AttitudeVisualizer: React.FC<AttitudeProps> = ({ roll, pitch, yaw }
           <div className="w-2.5 h-2.5 rounded bg-neutral-600" />
           <span>Rear</span>
         </div>
+        {isSimMode && (
+          <div className="hidden sm:flex items-center gap-2.5 pl-2 border-l border-neutral-800 text-[10px]">
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-0.5 bg-sky-400 inline-block" /> Pitch PID
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-0.5 bg-amber-400 inline-block" /> Roll PID
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> Motor ΔPWM
+            </span>
+          </div>
+        )}
       </div>
 
       <div ref={mountRef} className="w-full flex-1" />

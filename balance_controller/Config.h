@@ -26,9 +26,9 @@ enum ControllerType {
 
 // --- Flight Modes ---
 enum FlightMode {
-  MODE_CASCADE = 0, // Outer Angle P -> Inner Rate Loop (Default)
-  MODE_ANGLE   = 1, // Single-loop Angle Loop
-  MODE_RATE    = 2  // Single-loop Rate Loop (Acro Mode)
+  MODE_POS_HOLD = 0, // Position Hold: Altitude PID + Horizontal Flow/GPS PID (Always Cascaded Attitude)
+  MODE_ALT_HOLD = 1, // Altitude Hold: Altitude PID active, Horizontal Position loop bypassed/disabled
+  MODE_MANUAL   = 2  // Manual: Open-loop manual throttle, Attitude Cascaded stabilization only
 };
 
 // --- Auto-Flight Mission Stages ---
@@ -106,10 +106,11 @@ enum AltSource {
 #define MIN_ARMED_PWM        1080     // Idle spin floor
 #define MAX_MOTOR_PWM        1920     // Ceiling giving headroom for differential control
 #define PID_ACTIVE_THROTTLE  1200     // Closed loop starts early during takeoff
-#define TAKEOFF_THROTTLE     1360     // Throttle threshold for airborne detection (~1360us)
-#define MAX_TAKEOFF_RAMP_PWM 1500     // Upper safety ceiling for automatic liftoff climb ramp
-#define THROTTLE_RAMP_RATE   40.0f    // Slow, ultra-smooth climb ramp rate (~40 us/s; ~6.5s from idle to liftoff)
-#define LAND_RAMP_RATE       35.0f    // Gentle landing descent rate (~35 us/s)
+#define TAKEOFF_THROTTLE     1480     // Throttle threshold for takeoff / airborne detection (1480us)
+#define MAX_TAKEOFF_RAMP_PWM 1600     // Upper safety ceiling for automatic liftoff climb ramp (headroom for 1480us liftoff)
+#define THROTTLE_RAMP_RATE   70.0f    // Slow, ultra-smooth climb ramp rate (~70 us/s; ~2.5s from idle to liftoff)
+#define LAND_RAMP_RATE       35.0f    // Gentle normal landing descent rate (35 us/s)
+#define EMERG_LAND_RAMP_RATE 100.0f   // Faster emergency descent rate (100 us/s) when user sends start again
 #define MAX_TILT_ANGLE_DEG   40.0f    // Instant crash disarm threshold
 #define TIMEOUT_SAFETY_MS    30000    // 30s safety watchdog without serial command
 
@@ -118,6 +119,7 @@ enum AltSource {
 #define USE_SHARP_ONLY_ALTITUDE   false  // Legacy Sharp GP2Y0A analog IR rangefinder (dewired)
 #define DEFAULT_TARGET_HEIGHT_CM  100.0f // 100 cm (1.0m) hover height
 #define MAX_SAFE_CEILING_CM       185.0f // Safety ceiling before Matek 3901-L0X VL53 ToF saturation (200cm) triggering emergency descent
+#define POS_HOLD_MIN_AGL_CM       9.0f   // Minimum height above ground_height_cm before horizontal position hold engages
 
 // Output Saturation Caps
 #define MAX_PID_OUT          350.0f   // Max differential PWM for roll/pitch

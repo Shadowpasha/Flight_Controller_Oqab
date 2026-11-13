@@ -36,6 +36,7 @@
 #include "Motors.h"
 #include "Comms.h"
 #include "Parameters.h"
+#include "MissionSystem.h"
 
 FlightManager flightMgr;
 
@@ -48,9 +49,9 @@ static unsigned long last_gps_loop_millis = 0;
 //  HELPER FUNCTIONS
 // =============================================================================
 const char* getFlightModeName() {
-  if (flightMgr.current_mode == MODE_CASCADE) return "CASCADE (Angle+Rate)";
-  if (flightMgr.current_mode == MODE_ANGLE)   return "ANGLE (Single-Loop)";
-  return "RATE (Acro)";
+  if (flightMgr.current_mode == MODE_POS_HOLD) return "POS_HOLD (Position+Altitude Hold)";
+  if (flightMgr.current_mode == MODE_ALT_HOLD) return "ALT_HOLD (Altitude Hold Only)";
+  return "MANUAL (Attitude Stabilization)";
 }
 
 void disarm(const char* reason) {
@@ -66,6 +67,7 @@ void disarm(const char* reason) {
   resetPositionControl();
   resetAltitudeControl();
   resetEstimatorStates();
+  missionSys.stop(reason);
 
   dualPrintln("\n!!! DISARMED: " + String(reason));
 }
@@ -92,15 +94,20 @@ void setup() {
   // Initialize Flight Manager Defaults
   flightMgr.is_armed                = false;
   flightMgr.sim_mode                = false;
-  flightMgr.current_mode            = MODE_CASCADE;
+  flightMgr.current_mode            = MODE_POS_HOLD;
   flightMgr.flight_stage            = STAGE_IDLE;
   flightMgr.base_throttle_us        = 1000;
-  flightMgr.takeoff_throttle_target = 1380; // Safe initial takeoff baseline (auto-latched to actual liftoff throttle)
-  flightMgr.target_throttle_us      = 1380;
+  flightMgr.takeoff_throttle_target = 1450; // Nominal hover baseline (auto-latched if MPC_HOVER_LEARN=1)
+  flightMgr.target_throttle_us      = 1450;
   flightMgr.land_throttle_target    = 1280;
+  flightMgr.min_armed_throttle_us   = MIN_ARMED_PWM;
+  flightMgr.stop_triggers_land      = true;
   flightMgr.current_throttle_us     = 1000.0f;
-  flightMgr.throttle_ramp_rate      = THROTTLE_RAMP_RATE; // 40.0 us/s (gentle climb ramp)
-  flightMgr.land_ramp_rate          = LAND_RAMP_RATE;     // 35.0 us/s (gentle landing ramp)
+  flightMgr.throttle_ramp_rate      = THROTTLE_RAMP_RATE; // 70.0 us/s (gentle climb ramp)
+  flightMgr.land_ramp_rate          = LAND_RAMP_RATE;     // 35.0 us/s (normal landing ramp)
+  flightMgr.emerg_land_ramp_rate    = EMERG_LAND_RAMP_RATE; // 100.0 us/s (emergency landing ramp)
+  flightMgr.is_emergency_landing    = false;
+  flightMgr.auto_hover_calc_enabled = true;               // Auto hover throttle calculation enabled by default
   flightMgr.auto_landing_enabled    = true;
   flightMgr.hover_duration_ms       = 6000; // 6s auto-hover
   flightMgr.last_command_millis     = millis();
@@ -114,6 +121,9 @@ void setup() {
 
   // Initialize Persistent Parameter System (Loads tuned values from Flash NVS)
   initParameters();
+
+  // Initialize Mission System (loads default takeoff -> (0,0) -> hover -> land plan)
+  missionSys.init();
 
   // Initialize Swappable Sensor Subsystem
   initSensors();
@@ -196,10 +206,21 @@ void loop() {
 
     updateAltitudeEstimator(dt_alt, droneState.is_airborne, flightMgr.sim_mode);
     updateHorizontalEstimator(dt_alt, droneState.is_airborne, flightMgr.sim_mode);
+
+    // Altitude controller: active in POS_HOLD and ALT_HOLD modes
+    bool alt_mode_active = (flightMgr.current_mode == MODE_POS_HOLD || flightMgr.current_mode == MODE_ALT_HOLD);
     computeAltitudeControl(dt_alt, flightMgr.base_throttle_us, flightMgr.flight_stage,
-                           droneState.is_airborne, flightMgr.sim_mode, flightMgr.is_armed);
-    computePositionControl(dt_alt, droneState.is_airborne, flightMgr.sim_mode);
+                           droneState.is_airborne, flightMgr.sim_mode, flightMgr.is_armed && alt_mode_active);
+
+    // Horizontal position controller: active strictly in POS_HOLD mode
+    bool pos_mode_active = (flightMgr.current_mode == MODE_POS_HOLD);
+    computePositionControl(dt_alt, droneState.is_airborne && pos_mode_active, flightMgr.sim_mode && pos_mode_active);
     updateCompassEstimator();
+
+    // Mission System state machine update (50 Hz navigation sequencing)
+    if (missionSys.isActive()) {
+      missionSys.update(dt_alt);
+    }
   }
 
   // --- 3. 10 Hz GPS Position Sub-Loop (every 100ms) ---
@@ -258,13 +279,16 @@ void loop() {
       if (!droneState.is_airborne) {
         droneState.is_airborne = true;
         const char* trigger_src = confirmed_liftoff ? "LIDAR/HEIGHT (Debounced)" : "THROTTLE TIME GATE";
-        // Latch realistic hover baseline throttle (constrained to consistent 1280 - 1420 us range)
-        flightMgr.takeoff_throttle_target = constrain((int)flightMgr.current_throttle_us, 1280, 1420);
+        // PX4/ArduPilot pattern: keep configured/learned MPC_THR_HOVER as nominal baseline
+        // instead of latching open-loop ramp overshoot; seed alt_throttle_adj for bumpless handoff.
+        flightMgr.takeoff_throttle_target = (int)paramMgr.getParam("MPC_THR_HOVER");
         flightMgr.target_throttle_us      = flightMgr.takeoff_throttle_target;
+        altControl.alt_throttle_adj       = constrain(
+            flightMgr.current_throttle_us - (float)flightMgr.takeoff_throttle_target, -60.0f, 80.0f);
         altControl.active_height_sp_cm    = max(droneState.current_height_cm, droneState.ground_height_cm);
         dualPrintln(">>> LIFTOFF CONFIRMED via " + String(trigger_src) +
                     " (LiDAR: " + String(lidar_dist, 1) + "cm, H: " + String(droneState.current_height_cm, 1) +
-                    "cm). Latching Hover Thrust: " + String(flightMgr.takeoff_throttle_target) + "us");
+                    "cm). Hover Baseline: " + String(flightMgr.takeoff_throttle_target) + "us");
       }
     } else {
       // Confirm landed only when throttle drops AND sensors show near-ground
@@ -273,6 +297,7 @@ void loop() {
 
       if (droneState.is_airborne && (landed_by_height || landed_by_lidar || (flightMgr.base_throttle_us < MIN_ARMED_PWM + 80))) {
         droneState.is_airborne = false;
+        flightMgr.is_emergency_landing = false;
         dualPrintln(">>> LANDED (H: " + String(droneState.current_height_cm, 1) +
                     "cm, LiDAR: " + String(lidar_dist, 1) + "cm)");
       }
@@ -282,7 +307,7 @@ void loop() {
   }
 
   // --- 5. Tilt & Ceiling Flyaway Protection ---
-  if (flightMgr.is_armed && (fabs(droneState.roll_deg) > flightMgr.max_tilt_angle_deg || fabs(droneState.pitch_deg) > flightMgr.max_tilt_angle_deg)) {
+  if (flightMgr.is_armed && !flightMgr.sim_mode && (fabs(droneState.roll_deg) > flightMgr.max_tilt_angle_deg || fabs(droneState.pitch_deg) > flightMgr.max_tilt_angle_deg)) {
     disarm("CRASH PROTECTION: Excessive tilt angle detected!");
   }
 
@@ -294,9 +319,10 @@ void loop() {
     if (millis() - ceiling_violation_start_ms >= 200) {
       if (flightMgr.flight_stage != STAGE_LANDING && flightMgr.flight_stage != STAGE_TOUCHDOWN) {
         flightMgr.flight_stage            = STAGE_LANDING;
+        flightMgr.is_emergency_landing    = true;
         altControl.active_height_sp_cm    = altControl.target_height_cm;
         flightMgr.takeoff_throttle_target = max(flightMgr.takeoff_throttle_target - 100, MIN_ARMED_PWM + 80);
-        dualPrintln(">>> EMERGENCY CEILING INTERVENTION: Height near 180cm! Immediate descent triggered.");
+        dualPrintln(">>> EMERGENCY CEILING INTERVENTION: Height near 180cm! Immediate emergency descent triggered.");
       }
     }
   } else {
@@ -308,7 +334,8 @@ void loop() {
   float out_roll = 0.0f, out_pitch = 0.0f, out_yaw = 0.0f;
 
   if (flightMgr.is_armed) {
-    if (flightMgr.auto_landing_enabled && !flightMgr.sim_mode) {
+    bool use_auto_alt = (flightMgr.current_mode == MODE_POS_HOLD || flightMgr.current_mode == MODE_ALT_HOLD);
+    if (flightMgr.auto_landing_enabled && use_auto_alt && !flightMgr.sim_mode) {
 
       // ----------------------------------------------------------------
       // Stage 1: Climb Ramp — smooth ground ramp, stops ramping once airborne
@@ -329,20 +356,14 @@ void loop() {
           flightMgr.current_throttle_us = (float)flightMgr.takeoff_throttle_target;
 
           if (altControl.alt_hold_enabled) {
-            // Governed climb rate (default ~18 cm/s) prevents aggressive climb
-            float climb_rate_cmps = (altControl.max_climb_rate_mps > 0.05f) ?
-                                    (altControl.max_climb_rate_mps * 100.0f) : 18.0f;
-            if (altControl.active_height_sp_cm < altControl.target_height_cm) {
-              altControl.active_height_sp_cm += climb_rate_cmps * dt;
-              if (altControl.active_height_sp_cm > altControl.target_height_cm)
-                altControl.active_height_sp_cm = altControl.target_height_cm;
-            }
+            // PX4 PositionControl pattern: command target height directly;
+            // outer P-loop + max_climb_rate_mps (MPC_Z_CLIMB) govern climb speed and smooth deceleration.
+            altControl.active_height_sp_cm = altControl.target_height_cm;
           }
 
-          // Transition to HOVER once near target height (within 4cm) or setpoint reaches target
+          // Transition to HOVER only once physical height reaches target (within 5cm)
           bool height_reached = altControl.alt_hold_enabled &&
-                                (droneState.current_height_cm >= (altControl.target_height_cm - 4.0f) ||
-                                 altControl.active_height_sp_cm >= (altControl.target_height_cm - 1.0f));
+                                (droneState.current_height_cm >= (altControl.target_height_cm - 5.0f));
 
           if (height_reached) {
             flightMgr.flight_stage       = STAGE_HOVER;
@@ -360,54 +381,82 @@ void loop() {
       } else if (flightMgr.flight_stage == STAGE_HOVER) {
         altControl.active_height_sp_cm = altControl.target_height_cm;
 
-        // Adaptive In-Flight Hover Learning (PX4 Architecture):
-        // When holding steadily within 5cm of target and vertical speed < 12cm/s,
-        // automatically absorb steady-state trim into takeoff_throttle_target.
-        float height_err = fabs(droneState.current_height_cm - altControl.target_height_cm);
+        // Adaptive In-Flight Hover Learning (PX4/ArduPilot Architecture):
+        // Accumulate fractional trim in a float and transfer whole-us steps bumplessly out of vel_i_z.
         static unsigned long hover_stable_start_ms = 0;
         static bool hover_saved_to_nvs = false;
+        static float hover_learn_accum = 0.0f;
 
-        if (height_err < 5.0f && fabs(droneState.kf_vz) < 0.12f) {
-          if (hover_stable_start_ms == 0) hover_stable_start_ms = millis();
+        if (flightMgr.auto_hover_calc_enabled) {
+          float height_err = fabs(droneState.current_height_cm - altControl.target_height_cm);
 
-          // Bleed 5% of PID adjustment per second into hover baseline
-          float learn_step = altControl.alt_throttle_adj * 0.05f * dt;
-          if (fabs(learn_step) > 0.001f) {
-            flightMgr.takeoff_throttle_target = constrain(
-                flightMgr.takeoff_throttle_target + (int)round(learn_step),
-                1150, 1550);
+          if (height_err < 5.0f && fabs(droneState.kf_vz) < 0.12f) {
+            if (hover_stable_start_ms == 0) hover_stable_start_ms = millis();
+
+            // Bleed 5% of PID adjustment per second into fractional hover accumulator
+            hover_learn_accum += altControl.alt_throttle_adj * 0.05f * dt;
+            int delta_us = (int)truncf(hover_learn_accum);
+            if (delta_us != 0) {
+              int prev_hover = flightMgr.takeoff_throttle_target;
+              flightMgr.takeoff_throttle_target = constrain(prev_hover + delta_us, 1150, 1700);
+              int applied_us = flightMgr.takeoff_throttle_target - prev_hover;
+              hover_learn_accum -= (float)delta_us;
+
+              // Bumpless transfer: subtract applied step from vel_i_z so total thrust stays continuous
+              float hover_thrust_us = max(200.0f, (float)(prev_hover - 1000));
+              float acc_to_pwm = hover_thrust_us / 9.80665f;
+              altControl.vel_i_z = constrain(altControl.vel_i_z - ((float)applied_us / acc_to_pwm), -2.5f, 1.2f);
+            }
+
+            // When steady for 2.0s, save learned hover throttle to Flash NVS
+            if (!hover_saved_to_nvs && (millis() - hover_stable_start_ms >= 2000)) {
+              setParameter("MPC_THR_HOVER", (float)flightMgr.takeoff_throttle_target, true);
+              hover_saved_to_nvs = true;
+              dualPrintln(">>> Auto-Learned Hover Throttle: " + String(flightMgr.takeoff_throttle_target) +
+                          "us (Saved to Flash parameter MPC_THR_HOVER)");
+            }
+          } else {
+            hover_stable_start_ms = 0;
           }
-
-          // When steady for 2.0s, save learned hover throttle to Flash NVS
-          if (!hover_saved_to_nvs && (millis() - hover_stable_start_ms >= 2000)) {
-            setParameter("MPC_THR_HOVER", (float)flightMgr.takeoff_throttle_target, true);
-            hover_saved_to_nvs = true;
-            dualPrintln(">>> Auto-Learned Hover Throttle: " + String(flightMgr.takeoff_throttle_target) +
-                        "us (Saved to Flash parameter MPC_THR_HOVER)");
-          }
-        } else {
-          hover_stable_start_ms = 0;
         }
 
         if (millis() - flightMgr.hover_start_millis >= flightMgr.hover_duration_ms) {
           flightMgr.flight_stage         = STAGE_LANDING;
+          flightMgr.is_emergency_landing = false;
           altControl.active_height_sp_cm = droneState.current_height_cm; // Land from current actual height
           flightMgr.target_throttle_us   = flightMgr.land_throttle_target;
-          hover_saved_to_nvs             = false;
           hover_stable_start_ms          = 0;
-          dualPrintln("--> Hover complete! Beginning controlled descent from " +
+          hover_saved_to_nvs             = false;
+          hover_learn_accum              = 0.0f;
+          dualPrintln("--> Hover complete! Beginning controlled descent (" +
+                      String(flightMgr.land_ramp_rate, 0) + " us/s) from " +
                       String(droneState.current_height_cm, 1) + "cm...");
         }
 
       // ----------------------------------------------------------------
-      // Stage 3: Smooth Controlled Landing — setpoint descends at 12 cm/s
+      // Stage 3: Smooth Controlled Landing — separate normal vs emergency descent rates
       // ----------------------------------------------------------------
       } else if (flightMgr.flight_stage == STAGE_LANDING) {
+        float land_rate = flightMgr.is_emergency_landing ?
+                          ((flightMgr.emerg_land_ramp_rate >= 10.0f) ? flightMgr.emerg_land_ramp_rate : EMERG_LAND_RAMP_RATE) :
+                          ((flightMgr.land_ramp_rate >= 5.0f) ? flightMgr.land_ramp_rate : LAND_RAMP_RATE);
+
         if (altControl.alt_hold_enabled) {
-          altControl.active_height_sp_cm -= 12.0f * dt; // Descend setpoint at 12 cm/s
+          // Emergency descent setpoint drops faster (40 cm/s) vs gentle normal descent (12 cm/s)
+          float desc_cmps = flightMgr.is_emergency_landing ? 40.0f : 12.0f;
+          altControl.active_height_sp_cm -= desc_cmps * dt;
           // Floor: stop setpoint just above ground so PID doesn't overshoot into earth
           if (altControl.active_height_sp_cm < (droneState.ground_height_cm + 2.0f))
             altControl.active_height_sp_cm = droneState.ground_height_cm + 2.0f;
+
+          // In emergency landing: also ramp down takeoff_throttle_target baseline so throttle responds promptly
+          if (flightMgr.is_emergency_landing) {
+            if (flightMgr.takeoff_throttle_target > flightMgr.land_throttle_target) {
+              flightMgr.takeoff_throttle_target -= (int)(land_rate * dt);
+              if (flightMgr.takeoff_throttle_target < flightMgr.land_throttle_target)
+                flightMgr.takeoff_throttle_target = flightMgr.land_throttle_target;
+            }
+          }
 
           // Trigger touchdown once drone is near ground AND setpoint has descended
           if (droneState.current_height_cm <= (droneState.ground_height_cm + 4.0f) &&
@@ -417,7 +466,6 @@ void loop() {
           }
         } else {
           // Open-loop descent: ramp throttle down to land target
-          float land_rate = (flightMgr.land_ramp_rate >= 5.0f) ? flightMgr.land_ramp_rate : LAND_RAMP_RATE;
           if (flightMgr.current_throttle_us > flightMgr.land_throttle_target) {
             flightMgr.current_throttle_us -= land_rate * dt;
             if (flightMgr.current_throttle_us < flightMgr.land_throttle_target)
@@ -431,13 +479,16 @@ void loop() {
       // Stage 4: Touchdown — rapidly cut motors and disarm
       // ----------------------------------------------------------------
       } else if (flightMgr.flight_stage == STAGE_TOUCHDOWN) {
-        float land_rate = (flightMgr.land_ramp_rate >= 5.0f) ? flightMgr.land_ramp_rate : LAND_RAMP_RATE;
-        if (flightMgr.current_throttle_us > MIN_ARMED_PWM) {
+        float land_rate = flightMgr.is_emergency_landing ?
+                          ((flightMgr.emerg_land_ramp_rate >= 10.0f) ? flightMgr.emerg_land_ramp_rate : EMERG_LAND_RAMP_RATE) :
+                          ((flightMgr.land_ramp_rate >= 5.0f) ? flightMgr.land_ramp_rate : LAND_RAMP_RATE);
+        int floor_pwm = (flightMgr.min_armed_throttle_us >= 1000) ? flightMgr.min_armed_throttle_us : MIN_ARMED_PWM;
+        if (flightMgr.current_throttle_us > floor_pwm) {
           flightMgr.current_throttle_us -= land_rate * dt * 2.0f;
-          if (flightMgr.current_throttle_us < MIN_ARMED_PWM)
-            flightMgr.current_throttle_us = MIN_ARMED_PWM;
+          if (flightMgr.current_throttle_us < floor_pwm)
+            flightMgr.current_throttle_us = floor_pwm;
         }
-        if (flightMgr.current_throttle_us <= (MIN_ARMED_PWM + 5.0f))
+        if (flightMgr.current_throttle_us <= (floor_pwm + 5.0f))
           disarm("Auto-landing complete: Drone touched down safely.");
       }
 
@@ -447,18 +498,19 @@ void loop() {
       //   RAMP_UP (alt_hold):         ramping throttle + altitude PID adj
       //   Everything else:            raw current_throttle
       // ----------------------------------------------------------------
+      int floor_pwm = (flightMgr.min_armed_throttle_us >= 1000) ? flightMgr.min_armed_throttle_us : MIN_ARMED_PWM;
       if (flightMgr.flight_stage == STAGE_HOVER ||
           (flightMgr.flight_stage == STAGE_LANDING && altControl.alt_hold_enabled)) {
         // In hover/landing: PID adj is relative to the latched hover throttle
         flightMgr.base_throttle_us = (int)constrain(
             flightMgr.takeoff_throttle_target + altControl.alt_throttle_adj,
-            MIN_ARMED_PWM + 40, MAX_MOTOR_PWM - 80);
+            floor_pwm + 40, MAX_MOTOR_PWM - 80);
       } else if (flightMgr.flight_stage == STAGE_RAMP_UP && altControl.alt_hold_enabled) {
         // During ramp: once airborne, use the latched hover throttle + PID; before airborne, strictly use current_throttle_us
         if (droneState.is_airborne) {
           flightMgr.base_throttle_us = (int)constrain(
               flightMgr.takeoff_throttle_target + altControl.alt_throttle_adj,
-              MIN_ARMED_PWM + 40, MAX_MOTOR_PWM - 80);
+              floor_pwm + 40, MAX_MOTOR_PWM - 80);
         } else {
           flightMgr.base_throttle_us = (int)flightMgr.current_throttle_us;
         }
@@ -469,7 +521,9 @@ void loop() {
     } else {
       // Manual throttle ramp
       float ramp_up = (flightMgr.throttle_ramp_rate >= 5.0f) ? flightMgr.throttle_ramp_rate : THROTTLE_RAMP_RATE;
-      float ramp_dn = (flightMgr.land_ramp_rate >= 5.0f) ? flightMgr.land_ramp_rate : LAND_RAMP_RATE;
+      float ramp_dn = flightMgr.is_emergency_landing ?
+                      ((flightMgr.emerg_land_ramp_rate >= 10.0f) ? flightMgr.emerg_land_ramp_rate : EMERG_LAND_RAMP_RATE) :
+                      ((flightMgr.land_ramp_rate >= 5.0f) ? flightMgr.land_ramp_rate : LAND_RAMP_RATE);
       if (flightMgr.current_throttle_us < flightMgr.target_throttle_us) {
         flightMgr.current_throttle_us += ramp_up * dt;
         if (flightMgr.current_throttle_us > flightMgr.target_throttle_us)
@@ -491,8 +545,8 @@ void loop() {
       bool run_iterm = flightMgr.sim_mode || droneState.is_airborne;
 
       // Desired setpoints from Position Control Loop (or manual overrides)
-      float tgt_roll  = posControl.target_roll_deg  + flightMgr.manual_target_roll_deg;
-      float tgt_pitch = posControl.target_pitch_deg + flightMgr.manual_target_pitch_deg;
+      float tgt_roll  = (flightMgr.current_mode == MODE_POS_HOLD ? posControl.target_roll_deg : 0.0f) + flightMgr.manual_target_roll_deg;
+      float tgt_pitch = (flightMgr.current_mode == MODE_POS_HOLD ? posControl.target_pitch_deg : 0.0f) + flightMgr.manual_target_pitch_deg;
       float tgt_yaw   = 0.0f;
 
       getActiveController()->compute(
